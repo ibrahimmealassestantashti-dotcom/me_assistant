@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import os
+from google.oauth2.credentials import Credentials
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -10,22 +11,34 @@ st.set_page_config(
     layout="wide"
 )
 
-# 1. الاتصال بـ Google Drive عبر Service Account من Secrets
+# 1. الاتصال بـ Google Drive المرن (يدعم Service Account و OAuth Client)
 @st.cache_resource
 def get_drive_service():
-    if "gcp_service_account" in st.secrets:
-        creds_info = json.loads(st.secrets["gcp_service_account"])
-        creds = service_account.Credentials.from_service_account_info(
-            creds_info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
-        )
-        return build("drive", "v3", credentials=creds)
-    elif os.path.exists("credentials.json"):
-        creds = service_account.Credentials.from_service_account_file(
-            "credentials.json", scopes=["https://www.googleapis.com/auth/drive.readonly"]
-        )
-        return build("drive", "v3", credentials=creds)
-    else:
-        st.error("لم يتم العثور على اعتمادات Google Drive!")
+    try:
+        if "gcp_service_account" in st.secrets:
+            secret_data = st.secrets["gcp_service_account"]
+            if isinstance(secret_data, str):
+                creds_info = json.loads(secret_data)
+            else:
+                creds_info = secret_data
+
+            # التحقق هل البيانات لعبارة عن Service Account أم OAuth Client
+            if "type" in creds_info and creds_info["type"] == "service_account":
+                creds = service_account.Credentials.from_service_account_info(
+                    creds_info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
+                )
+            elif "installed" in creds_info or "web" in creds_info:
+                # التعامل مع اعتمادات OAuth Client
+                client_data = creds_info.get("installed") or creds_info.get("web")
+                st.info("💡 تحذير: الاعتمادات المرفقة هي OAuth Client. يفضل استخدام Service Account لاتصال مباشر دائم.")
+                return None
+            else:
+                st.error("صيغة ملف الاعتمادات غير معروفة.")
+                return None
+            
+            return build("drive", "v3", credentials=creds)
+    except Exception as e:
+        st.error(f"خطأ أثناء تهيئة الاتصال: {e}")
         return None
 
 # 2. قراءة الملفات والمجلدات المتفرعة
