@@ -1,7 +1,6 @@
 import streamlit as st
 import json
 import os
-from google.oauth2.credentials import Credentials
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -11,7 +10,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 1. الاتصال بـ Google Drive المرن (يدعم Service Account و OAuth Client)
+# 1. الاتصال بـ Google Drive عبر Service Account
 @st.cache_resource
 def get_drive_service():
     try:
@@ -22,26 +21,22 @@ def get_drive_service():
             else:
                 creds_info = secret_data
 
-            # التحقق هل البيانات لعبارة عن Service Account أم OAuth Client
             if "type" in creds_info and creds_info["type"] == "service_account":
                 creds = service_account.Credentials.from_service_account_info(
                     creds_info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
                 )
-            elif "installed" in creds_info or "web" in creds_info:
-                # التعامل مع اعتمادات OAuth Client
-                client_data = creds_info.get("installed") or creds_info.get("web")
-                st.info("💡 تحذير: الاعتمادات المرفقة هي OAuth Client. يفضل استخدام Service Account لاتصال مباشر دائم.")
-                return None
+                return build("drive", "v3", credentials=creds)
             else:
-                st.error("صيغة ملف الاعتمادات غير معروفة.")
+                st.error("❌ الاعتمادات المرفقة ليست Service Account! يرجى وضع ملف مفتاح Service Account JSON الصحيح.")
                 return None
-            
-            return build("drive", "v3", credentials=creds)
+        else:
+            st.error("❌ لم يتم العثور على gcp_service_account في Secrets.")
+            return None
     except Exception as e:
-        st.error(f"خطأ أثناء تهيئة الاتصال: {e}")
+        st.error(f"❌ خطأ في الاتصال: {e}")
         return None
 
-# 2. قراءة الملفات والمجلدات المتفرعة
+# 2. جلب الملفات والمجلدات
 def list_files_recursive(service, folder_id, path_prefix=""):
     results = []
     query = f"'{folder_id}' in parents and trashed = false"
@@ -65,7 +60,7 @@ def list_files_recursive(service, folder_id, path_prefix=""):
                     "رابط المعاينة": item.get("webViewLink", "#")
                 })
     except Exception as e:
-        st.warning(f"تنبيه أثناء قراءة المسار {path_prefix}: {e}")
+        st.error(f"حدث خطأ أثناء جلب الملفات من Google Drive: {e}")
         
     return results
 
@@ -116,7 +111,9 @@ else:
                                 use_container_width=True
                             )
                         else:
-                            st.warning("لم يتم العثور على ملفات.")
+                            st.warning("لم يتم العثور على ملفات. تأكد من مشاركة مجلد Drive مع بريد الـ Service Account.")
+                else:
+                    st.error("تعذر الاتصال بـ Google Drive. يرجى التحقق من إعدادات Secrets.")
 
 # التوقيع والحقوق
 st.markdown("---")
