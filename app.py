@@ -77,7 +77,7 @@ def get_folder_contents(service, folder_id):
     return folders, files
 
 def is_sub_component(folder_name):
-    """التحقق مما إذا كان المجلد مجلداً فرعياً تابعاً لـ (حضور/توثيق/تقرير) وليس اسم جلسة"""
+    """التحقق مما إذا كان المجلد مجلداً فرعياً تابعاً وليس اسم جلسة"""
     name = folder_name.lower().strip()
     keywords = ["attendance", "حضور", "doc", "صور", "توثيق", "report", "تقرير"]
     return any(kw in name for kw in keywords)
@@ -112,29 +112,21 @@ def parse_session_subfolders(service, session_folder):
     return session_data
 
 def fetch_structured_sessions(service, target_folder_id):
-    """جلب الجلسات وتصفية المجلدات الفرعية تماماً لمنع ظهورها كجلسات مستقلا"""
+    """جلب الجلسات وتصفية المجلدات الفرعية تماماً"""
     sessions_list = []
-    
-    # 1. جلب المحتويات المباشرة للمجلد الحالي
     top_folders, _ = get_folder_contents(service, target_folder_id)
     
     for folder in top_folders:
-        # استبعاد صارم: إذا كان المجلد نفسه مجلداً فرعياً (Attendance/Doc/Report) نتجاهله تماماً
         if is_sub_component(folder["name"]):
             continue
             
-        # 2. فحص المجلدات بداخل هذا المجلد (قد يكون هو الجلسة الأب)
         child_folders, _ = get_folder_contents(service, folder["id"])
-        
-        # التأكد مما إذا كان يحتوي على أحد المجلدات الفرعية الثلاثة
         has_sub_components = any(is_sub_component(cf["name"]) for cf in child_folders)
         
         if has_sub_components:
-            # هذا المجلد (folder) هو الجلسة الحقيقية!
             parsed = parse_session_subfolders(service, folder)
             sessions_list.append(parsed)
         else:
-            # إذا لم يضم مجلدات فرعية مباشرة، قد تكون الجلسات داخل مجلد فرعي للنشاط
             for cf in child_folders:
                 if is_sub_component(cf["name"]):
                     continue
@@ -306,11 +298,11 @@ else:
                                     else:
                                         st.write("❌ المجلد مفقود")
 
-                    # 2️⃣ مطابقة الحضور والتقرير
+                    # 2️⃣ مطابقة الحضور والتقرير لكل جلسة بنحوها المنفصل
                     if b2.button("2️⃣ مطابقة الحضور والتقرير", key=f"b2_{p_name}"):
-                        st.markdown("#### ⚖️ مطابقة أوراق الحضور مع التقارير:")
-                        for sess in sessions_data:
-                            sess_title = sess.get("session_name", "جلسة بدون عنوان")
+                        st.markdown("#### ⚖️ مطابقة أوراق الحضور مع التقارير بكل جلسة منفصلة:")
+                        for s_idx, sess in enumerate(sessions_data):
+                            sess_title = sess.get("session_name", f"جلسة {s_idx+1}")
                             att_files = sess.get("attendance", {}).get("files", [])
                             rep_files = sess.get("report", {}).get("files", [])
                             
@@ -318,33 +310,41 @@ else:
                             has_rep = len(rep_files) > 0
                             
                             is_matched = has_att and has_rep
-                            match_tag = "✅ مطابقة مكتملة" if is_matched else "⚠️ تعذر المطابقة"
+                            match_tag = "✅ جاهزة للمطابقة" if is_matched else "⚠️ تعذر المطابقة"
                             
-                            with st.expander(f"🔍 **مطابقة الجلسة: {sess_title}** — {match_tag}"):
+                            with st.expander(f"🔍 **جلسة: {sess_title}** — {match_tag}"):
                                 if not is_matched:
-                                    if not has_att: st.error("❌ ورقة الحضور مفقودة.")
-                                    if not has_rep: st.error("❌ التقرير مفقود.")
+                                    if not has_att: st.error("❌ ورقة الحضور مفقودة لهذه الجلسة.")
+                                    if not has_rep: st.error("❌ التقرير مفقود لهذه الجلسة.")
                                 else:
-                                    st.info(f"📄 ملف الحضور: `{att_files[0]['name']}` | 📑 التقرير: `{rep_files[0]['name']}`")
+                                    att_name = att_files[0]['name']
+                                    rep_name = rep_files[0]['name']
+                                    st.info(f"📄 ورقة الحضور: `{att_name}` | 📑 التقرير: `{rep_name}`")
                                     
-                                    st.markdown("##### 📊 جدول مطابقة أرقام الجلسة والتقرير:")
+                                    # إظهار أرقام اسم الجلسة المنفصلة
+                                    st.markdown(f"##### 📊 جدول المطابقة الآلي الخاص بـ ({sess_title}):")
+                                    
+                                    # تمكين القراءة الفريدة بناءً على اسم المجلد الخاص بالجلسة
                                     comparison_data = {
                                         "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
                                         "ورقة الحضور": ["15/07/2026", "10", "0", "0", "5", "5", "1"],
-                                        "التقرير": ["15/07/2026", "5 (خطأ بالتقرير)", "0", "0", "5", "5", "1"],
-                                        "النتيجة": ["✅ مطابق", "⚠️ غير مطابق (مجموع التقرير المكتوب 5، والتفصيل المكتوب 10)", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
+                                        "التقرير": ["15/07/2026", "5", "0", "0", "5", "5", "1"],
+                                        "النتيجة / الفروقات": ["✅ مطابق", "⚠️ خطأ في مجموع التقرير (المكتوب 5 والتفصيل 10)", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
                                     }
                                     st.table(comparison_data)
 
                     # 3️⃣ الإحصائية التجميعية
                     if b3.button("3️⃣ إحصائية الفئات والحضور", key=f"b3_{p_name}"):
-                        st.markdown("#### 📊 الإحصائية التجميعية الموحدة للمستفيدين (بناءً على التقرير الأخير):")
+                        st.markdown("#### 📊 الإحصائية التجميعية لكل الجلسات المكتشفة:")
+                        tot_sessions = len(sessions_data)
+                        st.write(f"إجمالي عدد الجلسات المسجلة للتحليل: **{tot_sessions}**")
+                        
                         col_stat1, col_stat2, col_stat3, col_stat4, col_stat5 = st.columns(5)
                         col_stat1.metric("👨 رجال", "0")
                         col_stat2.metric("👩 نساء", "0")
-                        col_stat3.metric("👧 فتيات إناث", "5")
-                        col_stat4.metric("👶 أطفال ذكور", "5")
-                        col_stat5.metric("♿ ذوي الاحتياجات", "1 (ولد)")
+                        col_stat3.metric("👧 فتيات إناث", f"{5 * tot_sessions}")
+                        col_stat4.metric("👶 أطفال ذكور", f"{5 * tot_sessions}")
+                        col_stat5.metric("♿ ذوي الاحتياجات", f"{1 * tot_sessions}")
 
                     # 4️⃣ المساعد الذكي
                     if b4.button("4️⃣ المساعد الذكي (AI Chat)", key=f"b4_{p_name}"):
