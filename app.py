@@ -445,23 +445,46 @@ else:
                                     st.table(comparison_data)
 
                     elif current_view == "stats":
-                        st.markdown("#### 📊 الإحصائية التجميعية للمستفيدين بناءً على محتوى الملفات الحقيقي:")
-                        tot_boys, tot_girls, tot_pwd, tot_men, tot_women = 0, 0, 0, 0, 0
-                        if GEMINI_API_KEY:
-                            for s in sessions_data:
-                                att_v, _, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
-                                tot_men += extract_number(att_v[2])
-                                tot_women += extract_number(att_v[3])
-                                tot_boys += extract_number(att_v[4])
-                                tot_girls += extract_number(att_v[5])
-                                tot_pwd += extract_number(att_v[6])
+                        st.markdown("#### 📊 إحصائية المستفيدين لكل جلسة على حدة بناءً على محتوى الملفات الحقيقي:")
+                        
+                        if not GEMINI_API_KEY:
+                            st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
+                        else:
+                            tot_men_all, tot_women_all, tot_boys_all, tot_girls_all, tot_pwd_all = 0, 0, 0, 0, 0
                             
-                        col_stat1, col_stat2, col_stat3, col_stat4, col_stat5 = st.columns(5)
-                        col_stat1.metric("👨 رجال", str(tot_men))
-                        col_stat2.metric("👩 نساء", str(tot_women))
-                        col_stat3.metric("👧 فتيات إناث", str(tot_girls))
-                        col_stat4.metric("👶 أطفال ذكور", str(tot_boys))
-                        col_stat5.metric("♿ ذوي الاحتياجات", str(tot_pwd))
+                            for s in sessions_data:
+                                sess_title = s.get("session_name", "جلسة بدون عنوان")
+                                att_v, _, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
+                                
+                                s_men = extract_number(att_v[2])
+                                s_women = extract_number(att_v[3])
+                                s_boys = extract_number(att_v[4])
+                                s_girls = extract_number(att_v[5])
+                                s_pwd = extract_number(att_v[6])
+                                
+                                tot_men_all += s_men
+                                tot_women_all += s_women
+                                tot_boys_all += s_boys
+                                tot_girls_all += s_girls
+                                tot_pwd_all += s_pwd
+                                
+                                # عرض إحصائيات كل جلسة في صندوق خاص بها
+                                with st.expander(f"📌 تفاصيل جلسة: {sess_title}", expanded=True):
+                                    c1, c2, c3, c4, c5 = st.columns(5)
+                                    c1.metric("👨 رجال", str(s_men))
+                                    c2.metric("👩 نساء", str(s_women))
+                                    c3.metric("👧 فتيات", str(s_girls))
+                                    c4.metric("👶 أطفال ذكور", str(s_boys))
+                                    c5.metric("♿ ذوي الاحتياجات", str(s_pwd))
+                            
+                            st.markdown("---")
+                            st.markdown("### 📈 إجمالي المستفيدين لجميع الجلسات المعروضة:")
+                            tot_c1, tot_c2, tot_c3, tot_c4, tot_c5 = st.columns(5)
+                            tot_c1.metric("👨 إجمالي الرجال", str(tot_men_all))
+                            tot_c2.metric("👩 إجمالي النساء", str(tot_women_all))
+                            tot_c3.metric("👧 إجمالي الفتيات", str(tot_girls_all))
+                            tot_c4.metric("👶 إجمالي الأطفال", str(tot_boys_all))
+                            tot_c5.metric("♿ إجمالي ذوي الاحتياجات", str(tot_pwd_all))
 
                     elif current_view == "chat":
                         st.markdown("---")
