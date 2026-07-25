@@ -11,18 +11,22 @@ st.set_page_config(
     layout="wide"
 )
 
+# دعم حزمة الذكاء الاصطناعي الجديدة والقديمة تلقائياً
+HAS_GENAI = False
 try:
-    import google.generativeai as genai
-    HAS_GEMINI_LIB = True
+    from google import genai
+    HAS_GENAI = True
+    GENAI_VERSION = "new"
 except ImportError:
-    HAS_GEMINI_LIB = False
+    try:
+        import google.generativeai as old_genai
+        HAS_GENAI = True
+        GENAI_VERSION = "old"
+    except ImportError:
+        HAS_GENAI = False
 
 CONFIG_FILE = "saved_projects.json"
-
-# تهيئة مفتاح Gemini
-api_key = st.secrets.get("GEMINI_API_KEY", None)
-if HAS_GEMINI_LIB and api_key:
-    genai.configure(api_key=api_key)
+gemini_api_key = st.secrets.get("GEMINI_API_KEY", None)
 
 def load_saved_projects():
     if os.path.exists(CONFIG_FILE):
@@ -245,16 +249,16 @@ else:
                 type="primary"
             )
 
-            if btn_fetch or f"data_{p_name}" in st.session_state:
-                if btn_fetch:
-                    with st.spinner("جاري تحديد مجلدات الجلسات وفحص المجلدات الفرعية الثلاثة بداخلها..."):
-                        sessions = fetch_structured_sessions(service, current_folder["id"])
-                        st.session_state[f"data_{p_name}"] = sessions
-                
-                sessions_data = st.session_state.get(f"data_{p_name}", [])
-                
+            if btn_fetch:
+                with st.spinner("جاري تحديد مجلدات الجلسات وفحص المجلدات الفرعية الثلاثة بداخلها..."):
+                    sessions = fetch_structured_sessions(service, current_folder["id"])
+                    st.session_state[f"data_{p_name}"] = sessions
+
+            sessions_data = st.session_state.get(f"data_{p_name}", None)
+            
+            if sessions_data is not None:
                 if not sessions_data:
-                    st.warning("لم يتم العثور على جلسات مكتملة الهيكلية داخل هذا المجلد (تأكد من اختيار مجلد النشاط الأب).")
+                    st.warning("لم يتم العثور على جلسات مكتملة الهيكلية داخل هذا المجلد.")
                 else:
                     st.success(f"تم اكتشاف {len(sessions_data)} جلسة/جلسات بالهيكلية الصحيحة!")
                     st.markdown("---")
@@ -262,25 +266,28 @@ else:
                     st.subheader("🛠️ أدوات التحليل والمطابقة الذكية")
                     b1, b2, b3, b4 = st.columns(4)
                     
-                    # 1️⃣ فحص المرفقات
+                    # حفظ حالات فتح الأزرار في session_state حتى لا تتصافر عند Rerun
                     if b1.button("1️⃣ فحص المرفقات للجلسات", key=f"b1_{p_name}"):
+                        st.session_state[f"view_{p_name}"] = "attachments"
+                    if b2.button("2️⃣ مطابقة الحضور والتقرير", key=f"b2_{p_name}"):
+                        st.session_state[f"view_{p_name}"] = "matching"
+                    if b3.button("3️⃣ إحصائية الفئات والحضور", key=f"b3_{p_name}"):
+                        st.session_state[f"view_{p_name}"] = "stats"
+                    if b4.button("4️⃣ المساعد الذكي (AI Chat)", key=f"b4_{p_name}"):
+                        st.session_state[f"view_{p_name}"] = "chat"
+
+                    current_view = st.session_state.get(f"view_{p_name}", None)
+
+                    # 1️⃣ عرض المرفقات
+                    if current_view == "attachments":
                         st.markdown("#### 📋 نتيجة فحص مجلدات الجلسات الفرعية الثلاثة:")
                         for sess in sessions_data:
                             att_files = sess.get("attendance", {}).get("files", [])
                             doc_files = sess.get("documentation", {}).get("files", [])
                             rep_files = sess.get("report", {}).get("files", [])
                             
-                            has_att = len(att_files) > 0
-                            has_doc = len(doc_files) > 0
-                            has_rep = len(rep_files) > 0
-                            
-                            missing = []
-                            if not has_att: missing.append("ورقة الحضور")
-                            if not has_doc: missing.append("صور التوثيق")
-                            if not has_rep: missing.append("التقرير")
-                            
-                            is_complete = (len(missing) == 0)
-                            status_tag = "✅ مكتملة" if is_complete else f"⚠️ ناقصة ({' + '.join(missing)})"
+                            is_complete = len(att_files) > 0 and len(doc_files) > 0 and len(rep_files) > 0
+                            status_tag = "✅ مكتملة" if is_complete else "⚠️ ناقصة"
                             sess_title = sess.get("session_name", "جلسة بدون عنوان")
                             
                             with st.expander(f"📌 **{sess_title}** — الحالة: {status_tag}"):
@@ -295,41 +302,27 @@ else:
                                     st.write("**📑 التقرير:**")
                                     for f in rep_files: st.caption(f"• {f['name']}")
 
-                    # 2️⃣ مطابقة الحضور والتقرير
-                    if b2.button("2️⃣ مطابقة الحضور والتقرير", key=f"b2_{p_name}"):
+                    # 2️⃣ عرض المطابقة
+                    elif current_view == "matching":
                         st.markdown("#### ⚖️ مطابقة أوراق الحضور مع التقارير:")
                         for sess in sessions_data:
                             sess_title = sess.get("session_name", "جلسة")
-                            att_files = sess.get("attendance", {}).get("files", [])
-                            rep_files = sess.get("report", {}).get("files", [])
-                            
-                            has_att = len(att_files) > 0
-                            has_rep = len(rep_files) > 0
-                            is_matched = has_att and has_rep
-                            
-                            with st.expander(f"🔍 **جلسة: {sess_title}** — {'✅ جاهزة' if is_matched else '⚠️ مفقود'}"):
-                                if is_matched:
-                                    att_vals, rep_vals, diff_vals = extract_session_metrics(sess)
-                                    comparison_data = {
-                                        "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
-                                        "ورقة الحضور": att_vals,
-                                        "التقرير": rep_vals,
-                                        "النتيجة / الفروقات": diff_vals
-                                    }
-                                    st.table(comparison_data)
+                            att_vals, rep_vals, diff_vals = extract_session_metrics(sess)
+                            comparison_data = {
+                                "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
+                                "ورقة الحضور": att_vals,
+                                "التقرير": rep_vals,
+                                "النتيجة / الفروقات": diff_vals
+                            }
+                            with st.expander(f"🔍 **جلسة: {sess_title}**"):
+                                st.table(comparison_data)
 
-                    # 3️⃣ الإحصائية التجميعية
-                    if b3.button("3️⃣ إحصائية الفئات والحضور", key=f"b3_{p_name}"):
+                    # 3️⃣ عرض الإحصائية
+                    elif current_view == "stats":
                         st.markdown("#### 📊 الإحصائية التجميعية للمستفيدين عبر كافة الجلسات:")
-                        tot_boys = 0
-                        tot_girls = 0
-                        tot_pwd = 0
-                        
-                        for sess in sessions_data:
-                            att_v, _, _ = extract_session_metrics(sess)
-                            tot_boys += int(att_v[4])
-                            tot_girls += int(att_v[5])
-                            tot_pwd += int(att_v[6])
+                        tot_boys = sum(int(extract_session_metrics(s)[0][4]) for s in sessions_data)
+                        tot_girls = sum(int(extract_session_metrics(s)[0][5]) for s in sessions_data)
+                        tot_pwd = sum(int(extract_session_metrics(s)[0][6]) for s in sessions_data)
                             
                         col_stat1, col_stat2, col_stat3, col_stat4, col_stat5 = st.columns(5)
                         col_stat1.metric("👨 رجال", "0")
@@ -338,34 +331,30 @@ else:
                         col_stat4.metric("👶 أطفال ذكور", str(tot_boys))
                         col_stat5.metric("♿ ذوي الاحتياجات", str(tot_pwd))
 
-                    # 4️⃣ المساعد الذكي (AI Chat التفاعلي المتعدد)
-                    if b4.button("4️⃣ المساعد الذكي (AI Chat)", key=f"b4_{p_name}"):
-                        st.session_state[f"show_chat_{p_name}"] = True
-
-                    if st.session_state.get(f"show_chat_{p_name}", False):
+                    # 4️⃣ عرض الشات الذكي التفاعلي
+                    elif current_view == "chat":
                         st.markdown("---")
                         st.subheader("💬 دردشة المساعد الذكي لمراجعة الجلسات")
 
-                        # تهيئة سجل الدردشة لهذا المشروع تحديداً
                         chat_history_key = f"messages_{p_name}"
                         if chat_history_key not in st.session_state:
                             st.session_state[chat_history_key] = []
 
-                        # عرض الرسائل القديمة أولاً
+                        # عرض المحادثات القديمة
                         for message in st.session_state[chat_history_key]:
                             with st.chat_message(message["role"]):
                                 st.write(message["content"])
 
-                        # استخدام st.chat_input بدلاً من st.text_input لتوفير تجربة محادثة حقيقية
+                        # استقبال السؤال الجديد
                         if prompt_text := st.chat_input("وجه سؤالك للذكاء الاصطناعي حول بيانات وقراءات الجلسات..."):
-                            # 1. إظهار وحفظ سؤال المستخدم
+                            # إظهار سؤال المستخدم فوراً
                             st.session_state[chat_history_key].append({"role": "user", "content": prompt_text})
                             with st.chat_message("user"):
                                 st.write(prompt_text)
 
-                            # 2. بناء سياق بيانات المشروع الحالية
-                            context_text = f"مشروع: {p_name} | المسار: {current_folder['name']}\n"
-                            context_text += f"إجمالي الجلسات: {len(sessions_data)}\n\n"
+                            # بناء سياق البيانات للجلسات
+                            context_text = f"مشروع: {p_name} | المجلد: {current_folder['name']}\n"
+                            context_text += f"عدد الجلسات الإجمالي: {len(sessions_data)}\n\n"
                             
                             tot_pwd_all, tot_boys_all, tot_girls_all = 0, 0, 0
                             for s in sessions_data:
@@ -375,38 +364,45 @@ else:
                                 tot_boys_all += int(att_v[4])
                                 tot_girls_all += int(att_v[5])
                                 context_text += f"- {s_title}:\n"
-                                context_text += f"  * التواريخ: الحضور {att_v[0]}، التقرير {rep_v[0]}\n"
-                                context_text += f"  * المجموع: الحضور {att_v[1]}، التقرير {rep_v[1]}\n"
-                                context_text += f"  * التفاصيل: أولاد {att_v[4]}، فتيات {att_v[5]}، ذوي احتياجات {att_v[6]}\n"
+                                context_text += f"  * التواريخ: حضور ({att_v[0]})، تقرير ({rep_v[0]})\n"
+                                context_text += f"  * المجموع: حضور ({att_v[1]})، تقرير ({rep_v[1]})\n"
+                                context_text += f"  * التفاصيل: أولاد ({att_v[4]})، فتيات ({att_v[5]})، ذوي احتياجات ({att_v[6]})\n"
 
-                            context_text += f"\nالملخص الإجمالي لكافة الجلسات ({len(sessions_data)} جلسة):\n- إجمالي ذوي الاحتياجات الخاصة (PWD): {tot_pwd_all}\n- إجمالي الأولاد (Boys): {tot_boys_all}\n- إجمالي الفتيات (Girls): {tot_girls_all}\n"
+                            context_text += f"\nالإجمالي الكلي:\n- ذوي الاحتياجات (PWD): {tot_pwd_all}\n- الأولاد: {tot_boys_all}\n- الفتيات: {tot_girls_all}\n"
 
-                            # 3. جلب الرد من Gemini
                             with st.chat_message("assistant"):
-                                with st.spinner("جاري تحليل السؤال وإعداد الرد..."):
+                                with st.spinner("جاري معالجة السؤال..."):
                                     try:
-                                        if api_key and HAS_GEMINI_LIB:
+                                        if HAS_GENAI and gemini_api_key:
                                             ai_prompt = f"""
-أنت مساعد ذكي متخصص في إدارة ومتابعة المشاريع بالجلسات.
-استعن بالبيانات المتاحة أسفله للإجابة بدقة وبأسلوب مباشر على سؤال المستخدم:
+أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.
+اجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:
 
---- البيانات الإحصائية للنشاط ---
+--- البيانات الإحصائية النشطة ---
 {context_text}
 --- نهاية البيانات ---
 
-سؤال المستخدم: {prompt_text}
+سؤال المستخدم الحالي: {prompt_text}
 """
-                                            model = genai.GenerativeModel('gemini-1.5-flash')
-                                            response = model.generate_content(ai_prompt)
-                                            ai_response = response.text
+                                            if GENAI_VERSION == "new":
+                                                client = genai.Client(api_key=gemini_api_key)
+                                                response = client.models.generate_content(
+                                                    model='gemini-2.5-flash',
+                                                    contents=ai_prompt
+                                                )
+                                                ai_response = response.text
+                                            else:
+                                                old_genai.configure(api_key=gemini_api_key)
+                                                model = old_genai.GenerativeModel('gemini-1.5-flash')
+                                                response = model.generate_content(ai_prompt)
+                                                ai_response = response.text
                                         else:
-                                            ai_response = f"تم استلام سؤالك '{prompt_text}'. المساعد الذكي يعمل بناءً على إجمالي {len(sessions_data)} جلسة."
+                                            ai_response = f"⚠️ تعذر الاتصال بـ API الذكاء الاصطناعي. يرجى التأكد من إضافة GEMINI_API_KEY بشكل صحيح داخل Secrets. (سؤالك: '{prompt_text}')"
 
                                         st.write(ai_response)
-                                        # حفظ رد الذكاء الاصطناعي في السجل
                                         st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
                                     except Exception as e:
-                                        st.error(f"حدث خطأ أثناء معالجة الرد: {e}")
+                                        st.error(f"حدث خطأ أثناء الاتصال بالذكاء الاصطناعي: {e}")
 
 st.markdown("---")
 st.markdown(
