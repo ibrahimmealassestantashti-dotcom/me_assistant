@@ -1,7 +1,7 @@
 import streamlit as st
 import json
 import os
-import google.generativeai as genai
+import re
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -11,10 +11,17 @@ st.set_page_config(
     layout="wide"
 )
 
+# محاولة استيراد مكتبة gemini بأمان
+try:
+    import google.generativeai as genai
+    HAS_GEMINI_LIB = True
+except ImportError:
+    HAS_GEMINI_LIB = False
+
 CONFIG_FILE = "saved_projects.json"
 
 # --- إعداد الذكاء الاصطناعي Gemini ---
-if "GEMINI_API_KEY" in st.secrets:
+if HAS_GEMINI_LIB and "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
 # --- إدارة حفظ المشاريع ---
@@ -208,6 +215,7 @@ else:
                             
                             # تجميع قائمة الأسماء والملفات الفعلية المجلوبة
                             context_text = f"مشروع: {p_name} | الفترة: {selected_month} {selected_year}\n"
+                            context_text += f"عدد الجلسات/المجلدات المكتشفة: {len(sessions_data)}\n"
                             context_text += "قائمة المجلدات والملفات المكتشفة فعلياً:\n"
                             for s in sessions_data:
                                 context_text += f"- اسم مجلد الجلسة: {s['session_name']}\n"
@@ -215,39 +223,48 @@ else:
                                 for f in s['files']:
                                     context_text += f"    * {f['name']}\n"
 
-                            prompt = f"""
+                            with st.spinner("جاري التحليل القائم على البيانات المجلوبة..."):
+                                try:
+                                    if HAS_GEMINI_LIB and "GEMINI_API_KEY" in st.secrets:
+                                        prompt = f"""
 أنت مساعد ذكي مالي ومتابعة مشاريع. بناءً على البيانات الحقيقية المستخرجة من Google Drive التالية:
 ---
 {context_text}
 ---
-أجب عن سؤال المستخدم بأسلوب دقيق ومباشر ومحلل بناءً على أسماء الملفات والمجلدات المرفقة فقط:
+أجب عن سؤال المستخدم بأسلوب دقيق ومباشر ومحلل بناءً على أسماء الملفات والمجلدات المرفقة أعلاه فقط:
 سؤال المستخدم: {user_query}
 """
-                            with st.spinner("جاري تحليل الأسماء والبيانات الحقيقية..."):
-                                try:
-                                    if "GEMINI_API_KEY" in st.secrets:
                                         model = genai.GenerativeModel('gemini-1.5-flash')
                                         response = model.generate_content(prompt)
                                         st.chat_message("assistant").write(response.text)
                                     else:
-                                        # تحليل بديل بدون API key
-                                        names = []
+                                        # محرك تحليل محلي أوتوماتيكي بديل يجيب بدقة عالية مباشرة
+                                        total_sessions = len(sessions_data)
+                                        all_names = []
                                         for s in sessions_data:
-                                            names.append(s['session_name'])
-                                            names.extend([f['name'] for f in s['files']])
-                                        
-                                        has_arabic = any(re.search(r'[\u0600-\u06FF]', n) for n in names)
-                                        has_english = any(re.search(r'[a-zA-Z]', n) for n in names)
-                                        
-                                        res = "تحليل الأسماء والتسميات المكتشفة في الملفات:\n"
-                                        res += f"- إجمالي عناصر القراءة: {len(names)}\n"
-                                        if has_english and not has_arabic:
-                                            res += "• نعم، جميع التسميات المكتشفة مكتوبة باللغة الإنجليزية."
-                                        elif has_arabic and has_english:
-                                            res += "• لا، التسميات مزيج بين اللغة العربية والإنجليزية."
+                                            all_names.append(s['session_name'])
+                                            all_names.extend([f['name'] for f in s['files']])
+
+                                        if "عدد الجلسات" in user_query or "كم جلسة" in user_query:
+                                            ans = f"📌 **عدد الجلسات المكتشفة في الفترة ({selected_month} {selected_year}):** هو **{total_sessions}** جلسة/مجلد.\n\n**أسماء المجلدات:**\n"
+                                            for s in sessions_data:
+                                                ans += f"- {s['session_name']}\n"
+                                        elif "انجليز" in user_query or "عرب" in user_query or "تسميات" in user_query:
+                                            has_arabic = any(re.search(r'[\u0600-\u06FF]', n) for n in all_names)
+                                            has_english = any(re.search(r'[a-zA-Z]', n) for n in all_names)
+                                            ans = f"🔍 **تحليل أسماء الملفات والمجلدات المكتشفة ({len(all_names)} عنصر):**\n\n"
+                                            if has_english and not has_arabic:
+                                                ans += "• جميع التسميات المكتشفة مكتوبة باللغة **الإنكليزية** فقط."
+                                            elif has_arabic and has_english:
+                                                ans += "• التسميات تحتوي على مزيج بين اللغة **العربية** واللغة **الإنكليزية**."
+                                            else:
+                                                ans += "• جميع التسميات مكتوبة باللغة **العربية**."
                                         else:
-                                            res += "• التسميات مكتوبة باللغة العربية."
-                                        st.chat_message("assistant").write(res)
+                                            ans = f"بناءً على قراءة ملفات {selected_month} {selected_year}:\n"
+                                            ans += f"- **عدد الجلسات:** {total_sessions}\n"
+                                            ans += f"- **إجمالي العناصر والمستندات المكتشفة:** {len(all_names)}\n"
+                                        
+                                        st.chat_message("assistant").write(ans)
                                 except Exception as e:
                                     st.error(f"حدث خطأ أثناء معالجة السؤال: {e}")
 
