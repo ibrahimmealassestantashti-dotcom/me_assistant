@@ -348,7 +348,7 @@ else:
                         col_stat4.metric("👶 أطفال ذكور", str(tot_boys))
                         col_stat5.metric("♿ ذوي الاحتياجات", str(tot_pwd))
 
-                    # 4️⃣ عرض الشات الذكي التفاعلي
+                   # 4️⃣ عرض الشات الذكي التفاعلي
                     elif current_view == "chat":
                         st.markdown("---")
                         st.subheader("💬 دردشة المساعد الذكي لمراجعة الجلسات")
@@ -385,33 +385,25 @@ else:
 
                             with st.chat_message("assistant"):
                                 with st.spinner("جاري معالجة السؤال بواسطة الذكاء الاصطناعي..."):
-                                    if not gemini_api_key:
-                                        st.error("❌ مفتاح Gemini غير متوفر. تأكد من إضافته في إعدادات Secrets باسم GEMINI_API_KEY.")
-                                    else:
+                                    try:
+                                        import google.generativeai as genai
+                                        
+                                        # ضبط المفتاح بالطريقة الرسمية الصحيحة
+                                        genai.configure(api_key="AQ.Ab8RN6LSPixEE0F_pMfnUp8nY4kwGd4gCNy9eNV5RXMhPNbcJA")
+                                        
+                                        # استخدام النموذج المستقر
+                                        model = genai.GenerativeModel("gemini-1.5-flash")
+                                        
                                         ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
 
-                                        # تم التحديث إلى النموذج المدعوم والنشط حالياً
-                                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_api_key}"
-                                        headers = {"Content-Type": "application/json"}
-                                        payload = {
-                                            "contents": [{
-                                                "parts": [{"text": ai_prompt}]
-                                            }]
-                                        }
-
-                                        try:
-                                            res = requests.post(url, json=payload, headers=headers, timeout=30)
-                                            res_json = res.json()
-
-                                            if res.status_code == 200:
-                                                ai_response = res_json['candidates'][0]['content']['parts'][0]['text']
-                                                st.write(ai_response)
-                                                st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
-                                            else:
-                                                err_msg = res_json.get('error', {}).get('message', 'خطأ غير معروف')
-                                                st.error(f"❌ خطأ من Google API ({res.status_code}): {err_msg}")
-                                        except Exception as e:
-                                            st.error(f"❌ فشل الاتصال بالخادم: {e}")
+                                        response = model.generate_content(ai_prompt)
+                                        ai_response = response.text
+                                        
+                                        st.write(ai_response)
+                                        st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
+                                        
+                                    except Exception as e:
+                                        st.error(f"❌ خطأ في الاتصال بالذكاء الاصطناعي: {e}")
 
 st.markdown("---")
 st.markdown(
