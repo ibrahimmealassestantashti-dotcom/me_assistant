@@ -134,7 +134,7 @@ def fetch_structured_sessions(service, target_folder_id):
     return sessions_list
 
 def call_gemini_api(prompt, api_key):
-    """دالة اتصال مزودة بإعادة محاولة تلقائية (Exponential Backoff) لتجاوز حدود الخطة المجانية 429"""
+    """دالة اتصال محدثة لاستخدام نموذج gemini-2.5-flash مع إعادة محاولة تلقائية (Exponential Backoff)"""
     max_retries = 3
     delay = 3
     
@@ -142,7 +142,7 @@ def call_gemini_api(prompt, api_key):
         try:
             client = genai.Client(api_key=api_key.strip())
             response = client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-2.5-flash",
                 contents=prompt,
             )
             class MockResponse:
@@ -207,7 +207,6 @@ def extract_session_metrics_with_ai(session_info, api_key):
 
     try:
         res = call_gemini_api(prompt, api_key)
-        # إعطاء استراحة قصيرة جداً لتجنب ضرب حد الـ RPM في الخطة المجانية
         time.sleep(1.2)
         
         if res.status_code == 200:
