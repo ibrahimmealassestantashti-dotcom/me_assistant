@@ -134,7 +134,7 @@ def fetch_structured_sessions(service, target_folder_id):
     return sessions_list
 
 def call_gemini_api(prompt, api_key):
-    """دالة اتصال باستخدام نموذج gemini-2.5-flash المتاح مع إعادة المحاولة التلقائية"""
+    """دالة اتصال باستخدام نموذج gemini-1.5-flash المتوافق مع جميع المفاتيح مع إعادة المحاولة"""
     max_retries = 3
     delay = 3
     
@@ -142,7 +142,7 @@ def call_gemini_api(prompt, api_key):
         try:
             client = genai.Client(api_key=api_key.strip())
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-1.5-flash",
                 contents=prompt,
             )
             class MockResponse:
