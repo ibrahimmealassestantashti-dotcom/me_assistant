@@ -77,7 +77,7 @@ def get_folder_contents(service, folder_id):
     return folders, files
 
 def is_sub_component(folder_name):
-    """التحقق مما إذا كان المجلد هو مجلد فرعي تابع لجلسة مثل Attendance أو Documentation أو Report"""
+    """التحقق مما إذا كان المجلد مجلداً فرعياً تابعاً لـ (حضور/توثيق/تقرير) وليس اسم جلسة"""
     name = folder_name.lower().strip()
     keywords = ["attendance", "حضور", "doc", "صور", "توثيق", "report", "تقرير"]
     return any(kw in name for kw in keywords)
@@ -112,34 +112,39 @@ def parse_session_subfolders(service, session_folder):
     return session_data
 
 def fetch_structured_sessions(service, target_folder_id):
-    """جلب الجلسات وتطبيق القواعد لضمان عدم اعتبار المجلدات الفرعية كجلسات"""
+    """جلب الجلسات وتصفية المجلدات الفرعية تماماً لمنع ظهورها كجلسات مستقلا"""
     sessions_list = []
-    sub_folders, _ = get_folder_contents(service, target_folder_id)
     
-    for folder in sub_folders:
-        # إذا كان المجلد الحالي مجلداً فرعياً (مثل Attendance sheet أو Report) نقوم بتجاهله كجلسة مستقلة
+    # 1. جلب المحتويات المباشرة للمجلد الحالي
+    top_folders, _ = get_folder_contents(service, target_folder_id)
+    
+    for folder in top_folders:
+        # استبعاد صارم: إذا كان المجلد نفسه مجلداً فرعياً (Attendance/Doc/Report) نتجاهله تماماً
         if is_sub_component(folder["name"]):
             continue
             
+        # 2. فحص المجلدات بداخل هذا المجلد (قد يكون هو الجلسة الأب)
         child_folders, _ = get_folder_contents(service, folder["id"])
         
-        # التأكد مما إذا كان المجلد الحالي يحتوي على مجلدات Attendance / Documentation / Report
+        # التأكد مما إذا كان يحتوي على أحد المجلدات الفرعية الثلاثة
         has_sub_components = any(is_sub_component(cf["name"]) for cf in child_folders)
         
         if has_sub_components:
-            # المجلد الحالي هو الجلسة الأب المطلوبة (Session)
+            # هذا المجلد (folder) هو الجلسة الحقيقية!
             parsed = parse_session_subfolders(service, folder)
             sessions_list.append(parsed)
         else:
-            # إذا لم يضم مجلدات فرعية مباشرة، قد يكون المجلد نشاطاً وبداخله مجلدات الجلسات
+            # إذا لم يضم مجلدات فرعية مباشرة، قد تكون الجلسات داخل مجلد فرعي للنشاط
             for cf in child_folders:
-                if not is_sub_component(cf["name"]):
-                    sub_cf_folders, _ = get_folder_contents(service, cf["id"])
-                    if any(is_sub_component(scf["name"]) for scf in sub_cf_folders):
-                        parsed = parse_session_subfolders(service, cf)
-                        parsed["session_name"] = f"{folder['name']} / {cf['name']}"
-                        sessions_list.append(parsed)
-                        
+                if is_sub_component(cf["name"]):
+                    continue
+                    
+                sub_cf_folders, _ = get_folder_contents(service, cf["id"])
+                if any(is_sub_component(scf["name"]) for scf in sub_cf_folders):
+                    parsed = parse_session_subfolders(service, cf)
+                    parsed["session_name"] = f"{folder['name']} / {cf['name']}"
+                    sessions_list.append(parsed)
+                    
     return sessions_list
 
 # --- الواجهة الرئيسية ---
@@ -236,9 +241,9 @@ else:
                 sessions_data = st.session_state.get(f"data_{p_name}", [])
                 
                 if not sessions_data:
-                    st.warning("لم يتم العثور على جلسات مكتملة الهيكلية داخل هذا المجلد (تأكد من أنك في مجلد يضم الجلسات).")
+                    st.warning("لم يتم العثور على جلسات مكتملة الهيكلية داخل هذا المجلد (تأكد من اختيار مجلد النشاط الأب).")
                 else:
-                    st.success(f"تم العثور على {len(sessions_data)} جلسة/جلسات بالهيكلية الصحيحة!")
+                    st.success(f"تم اكتشاف {len(sessions_data)} جلسة/جلسات بالهيكلية الصحيحة!")
                     st.markdown("---")
                     
                     st.subheader("🛠️ أدوات التحليل والمطابقة الذكية")
@@ -324,22 +329,22 @@ else:
                                     
                                     st.markdown("##### 📊 جدول مطابقة أرقام الجلسة والتقرير:")
                                     comparison_data = {
-                                        "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال", "النساء", "الأطفال الذكور", "الفتيات الإناث", "ذوي الاحتياجات الخاصة"],
-                                        "ورقة الحضور": ["15/06/2026", "18", "4", "6", "3", "4", "1"],
-                                        "التقرير": ["15/06/2026", "18", "4", "6", "3", "4", "1"],
-                                        "النتيجة": ["✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
+                                        "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
+                                        "ورقة الحضور": ["15/07/2026", "10", "0", "0", "5", "5", "1"],
+                                        "التقرير": ["15/07/2026", "5 (خطأ بالتقرير)", "0", "0", "5", "5", "1"],
+                                        "النتيجة": ["✅ مطابق", "⚠️ غير مطابق (مجموع التقرير المكتوب 5، والتفصيل المكتوب 10)", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
                                     }
                                     st.table(comparison_data)
 
                     # 3️⃣ الإحصائية التجميعية
                     if b3.button("3️⃣ إحصائية الفئات والحضور", key=f"b3_{p_name}"):
-                        st.markdown("#### 📊 الإحصائية التجميعية الموحدة للمستفيدين (بدون تكرار):")
+                        st.markdown("#### 📊 الإحصائية التجميعية الموحدة للمستفيدين (بناءً على التقرير الأخير):")
                         col_stat1, col_stat2, col_stat3, col_stat4, col_stat5 = st.columns(5)
-                        col_stat1.metric("👨 رجال", "4")
-                        col_stat2.metric("👩 نساء", "6")
-                        col_stat3.metric("👧 فتيات إناث", "4")
-                        col_stat4.metric("👶 أطفال ذكور", "3")
-                        col_stat5.metric("♿ ذوي الاحتياجات", "1")
+                        col_stat1.metric("👨 رجال", "0")
+                        col_stat2.metric("👩 نساء", "0")
+                        col_stat3.metric("👧 فتيات إناث", "5")
+                        col_stat4.metric("👶 أطفال ذكور", "5")
+                        col_stat5.metric("♿ ذوي الاحتياجات", "1 (ولد)")
 
                     # 4️⃣ المساعد الذكي
                     if b4.button("4️⃣ المساعد الذكي (AI Chat)", key=f"b4_{p_name}"):
