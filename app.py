@@ -136,7 +136,6 @@ def fetch_structured_sessions(service, target_folder_id):
     return sessions_list
 
 def get_file_content_bytes(service, file_id, mime_type):
-    """تحميل محتوى الملف الفعلي من Google Drive"""
     try:
         if mime_type == 'application/vnd.google-apps.document':
             request = service.files().export_media(fileId=file_id, mimeType='text/plain')
@@ -156,7 +155,6 @@ def get_file_content_bytes(service, file_id, mime_type):
         return None
 
 def analyze_session_files_with_ai(service, session_info, api_key):
-    """قراءة وتحليل الملفات الفعلية عبر نموذج gemini-2.5-flash دون أي قيم افتراضية مخادعة"""
     if "cached_metrics" in session_info:
         return session_info["cached_metrics"]
         
@@ -177,7 +175,6 @@ def analyze_session_files_with_ai(service, session_info, api_key):
     uploaded_gemini_files = []
     
     try:
-        # تنزيل ورفع ملفات الحضور
         for f in att_files:
             b = get_file_content_bytes(service, f["id"], f["mimeType"])
             if b:
@@ -192,7 +189,6 @@ def analyze_session_files_with_ai(service, session_info, api_key):
                 except:
                     pass
 
-        # تنزيل ورفع ملفات التقارير
         for f in rep_files:
             b = get_file_content_bytes(service, f["id"], f["mimeType"])
             if b:
@@ -226,6 +222,7 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         for uf in uploaded_gemini_files:
             prompt.append(uf)
 
+        # استخدام نموذج gemini-2.5-flash النشط في حسابك
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
@@ -247,7 +244,7 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         err_tuple = (
             ["❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة"],
             ["❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة"],
-            [f"❌ خطأ فني: {str(e)[:30]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
+            [f"❌ خطأ اتصال/استهلاك: {str(e)[:35]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
         )
         session_info["cached_metrics"] = err_tuple
         return err_tuple
