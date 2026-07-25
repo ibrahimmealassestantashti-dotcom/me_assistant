@@ -378,7 +378,7 @@ else:
                                     else:
                                         ans = f"تم استقبال استفسارك حول الجلسات المعتمدة ({len(sessions_data)} جلسة) بنجاح."
                                         st.chat_message("assistant").write(ans)
-                                mexc:
+                                except Exception as e:
                                     st.error(f"حدث خطأ أثناء معالجة السؤال: {e}")
 
 st.markdown("---")
