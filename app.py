@@ -222,7 +222,6 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         for uf in uploaded_gemini_files:
             prompt.append(uf)
 
-        # استخدام نموذج gemini-2.5-flash النشط في حسابك
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
@@ -482,6 +481,9 @@ else:
                                 with st.chat_message("assistant"):
                                     with st.spinner("جاري تحليل ومراجعة محتوى الملفات والإجابة..."):
                                         ai_prompt = f"أنت مساعد ذكي مدقق لمشاريع المتابعة والتقييم.\nأجب باللغة العربية بناءً على محتوى الملفات الحقيقي المستخلص:\n{context_text}\nسؤال المستخدم: {prompt_text}"
+                                        
+                                        # تم إصلاح الخطأ بتهيئة العميل هنا بشكل صحيح:
+                                        client = genai.Client(api_key=GEMINI_API_KEY.strip())
                                         res = client.models.generate_content(
                                             model="gemini-2.5-flash",
                                             contents=ai_prompt,
