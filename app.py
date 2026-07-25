@@ -223,13 +223,13 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         for uf in uploaded_gemini_files:
             prompt.append(uf)
 
-        # التحديث إلى Interactions API ونموذج gemini-3.5-flash
-        interaction = client.interactions.create(
+        # استخدام generate_content لدعم رفع الملفات المتعددة والمرفقات
+        response = client.models.generate_content(
             model="gemini-3.5-flash",
-            input=prompt,
+            contents=prompt,
         )
         
-        text_res = interaction.output_text
+        text_res = response.text
         cleaned = text_res.replace("```json", "").replace("```", "").strip()
         data = json.loads(cleaned)
         
@@ -242,18 +242,20 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         return result
 
     except ClientError as ce:
+        error_msg = f"ClientError ({ce.code}): {str(ce)}"
         err_tuple = (
-            ["❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام"],
-            ["❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام"],
-            [f"❌ تجاوز حد الخطة المجانية (Code {ce.code}): انتظر قليلاً", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
+            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
+            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
+            [f"❌ {error_msg[:100]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
         )
         session_info["cached_metrics"] = err_tuple
         return err_tuple
     except Exception as e:
+        error_msg = str(e)
         err_tuple = (
             ["❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة"],
             ["❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة"],
-            [f"❌ خطأ اتصال: {str(e)[:35]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
+            [f"❌ سبب الخطأ: {error_msg[:120]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
         )
         session_info["cached_metrics"] = err_tuple
         return err_tuple
@@ -494,7 +496,7 @@ else:
                                         
                                         try:
                                             client = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                            # التحديث إلى Interactions API للدردشة
+                                            # استخدام Interactions API للدردشة النصية
                                             interaction = client.interactions.create(
                                                 model="gemini-3.5-flash",
                                                 input=ai_prompt,
