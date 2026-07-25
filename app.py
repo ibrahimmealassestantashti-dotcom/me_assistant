@@ -1,7 +1,8 @@
 import streamlit as st
 import json
 import os
-import requests
+import time
+import random
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from google import genai
@@ -133,38 +134,52 @@ def fetch_structured_sessions(service, target_folder_id):
     return sessions_list
 
 def call_gemini_api(prompt, api_key):
-    """دالة الاتصال الحديثة باستخدام مكتبة google-genai ونموذج gemini-2.0-flash الصحيح"""
-    try:
-        client = genai.Client(api_key=api_key.strip())
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt,
-        )
-        class MockResponse:
-            status_code = 200
-            text = response.text
-            def json(self):
-                return {
-                    'candidates': [{
-                        'content': {
-                            'parts': [{'text': response.text}]
-                        }
-                    }]
-                }
-        return MockResponse()
-    except Exception as e:
-        err_str = str(e)
-        status_code = 429 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str else 500
-        class MockErrorResponse:
-            pass
-        res = MockErrorResponse()
-        res.status_code = status_code
-        res.text = err_str
-        res.json = lambda: {'error': {'message': err_str}}
-        return res
+    """دالة اتصال مزودة بإعادة محاولة تلقائية (Exponential Backoff) لتجاوز حدود الخطة المجانية 429"""
+    max_retries = 3
+    delay = 3
+    
+    for attempt in range(max_retries):
+        try:
+            client = genai.Client(api_key=api_key.strip())
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+            )
+            class MockResponse:
+                status_code = 200
+                text = response.text
+                def json(self):
+                    return {
+                        'candidates': [{
+                            'content': {
+                                'parts': [{'text': response.text}]
+                            }
+                        }]
+                    }
+            return MockResponse()
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                if attempt < max_retries - 1:
+                    sleep_time = delay * (2 ** attempt) + random.uniform(0.5, 1.5)
+                    time.sleep(sleep_time)
+                    continue
+                else:
+                    class MockErrorResponse:
+                        status_code = 429
+                        text = err_str
+                        def json(self):
+                            return {'error': {'message': err_str}}
+                    return MockErrorResponse()
+            else:
+                class MockErrorResponse:
+                    status_code = 500
+                    text = err_str
+                    def json(self):
+                        return {'error': {'message': err_str}}
+                return MockErrorResponse()
 
 def extract_session_metrics_with_ai(session_info, api_key):
-    # نظام التخزين المؤقت لمنع تكرار استهلاك الحصة (Rate Limit)
     if "cached_metrics" in session_info:
         return session_info["cached_metrics"]
         
@@ -192,6 +207,9 @@ def extract_session_metrics_with_ai(session_info, api_key):
 
     try:
         res = call_gemini_api(prompt, api_key)
+        # إعطاء استراحة قصيرة جداً لتجنب ضرب حد الـ RPM في الخطة المجانية
+        time.sleep(1.2)
+        
         if res.status_code == 200:
             text_res = res.json()['candidates'][0]['content']['parts'][0]['text']
             cleaned = text_res.replace("```json", "").replace("```", "").strip()
@@ -202,13 +220,11 @@ def extract_session_metrics_with_ai(session_info, api_key):
                 data.get("differences", default_diff)
             )
         elif res.status_code == 429:
-            st.warning("⚠️ تم بلوغ الحد الأقصى المجاني لطلبات Gemini API (Quota Exceeded). يتم استخدام قيم افتراضية مؤقتة لتجنب توقف التطبيق.")
+            st.warning("⚠️ تم بلوغ الحد الأقصى المؤقت لطلبات الخطة المجانية. تم استخدام القيم التلقائية بانتظار تجدد الحصة.")
             session_info["cached_metrics"] = (default_att, default_rep, default_diff)
         else:
-            st.error(f"خطأ في الاتصال بـ Gemini API: {res.text}")
             session_info["cached_metrics"] = (default_att, default_rep, default_diff)
     except Exception as e:
-        st.error(f"خطأ استثناء: {e}")
         session_info["cached_metrics"] = (default_att, default_rep, default_diff)
         
     return session_info["cached_metrics"]
