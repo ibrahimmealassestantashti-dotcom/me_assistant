@@ -14,21 +14,8 @@ st.set_page_config(
 
 CONFIG_FILE = "saved_projects.json"
 
-# تعيين مفتاح الذكاء الاصطناعي مباشرة وصحيح برمجياً
-gemini_api_key = "AQ.Ab8RN6LSPixEE0F_pMfnUp8nY4kwGd4gCNy9eNV5RXMhPNbcJA"
-
-def load_saved_projects():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-    pass
-
-if not gemini_api_key:
-    gemini_api_key = os.environ.get("GEMINI_API_KEY", None)
+# مفتاح الذكاء الاصطناعي الخاص بك
+GEMINI_API_KEY = "AQ.Ab8RN6KgF9CANRPsP--41d3hJGfWpEb8a9M9nwI6Ely_6qXv_Q"
 
 def load_saved_projects():
     if os.path.exists(CONFIG_FILE):
@@ -287,7 +274,6 @@ else:
 
                     current_view = st.session_state.get(f"view_{p_name}", None)
 
-                    # 1️⃣ عرض المرفقات مع إشارة تنبيه للمطابقة إن وجد خطأ
                     if current_view == "attachments":
                         st.markdown("#### 📋 نتيجة فحص مجلدات الجلسات الفرعية الثلاثة:")
                         for sess in sessions_data:
@@ -316,7 +302,6 @@ else:
                                     st.write("**📑 التقرير:**")
                                     for f in rep_files: st.caption(f"• {f['name']}")
 
-                    # 2️⃣ عرض المطابقة مع تنبيه للجلسة التي تحتوي خطأ
                     elif current_view == "matching":
                         st.markdown("#### ⚖️ مطابقة أوراق الحضور مع التقارير:")
                         for sess in sessions_data:
@@ -334,7 +319,6 @@ else:
                             with st.expander(f"🔍 {title_prefix}**جلسة: {sess_title}**"):
                                 st.table(comparison_data)
 
-                    # 3️⃣ عرض الإحصائية
                     elif current_view == "stats":
                         st.markdown("#### 📊 الإحصائية التجميعية للمستفيدين عبر كافة الجلسات:")
                         tot_boys = sum(int(extract_session_metrics(s)[0][4]) for s in sessions_data)
@@ -348,7 +332,6 @@ else:
                         col_stat4.metric("👶 أطفال ذكور", str(tot_boys))
                         col_stat5.metric("♿ ذوي الاحتياجات", str(tot_pwd))
 
-                   # 4️⃣ عرض الشات الذكي التفاعلي
                     elif current_view == "chat":
                         st.markdown("---")
                         st.subheader("💬 دردشة المساعد الذكي لمراجعة الجلسات")
@@ -386,24 +369,29 @@ else:
                             with st.chat_message("assistant"):
                                 with st.spinner("جاري معالجة السؤال بواسطة الذكاء الاصطناعي..."):
                                     try:
-                                        import google.generativeai as genai
-                                        
-                                        # ضبط المفتاح بالطريقة الرسمية الصحيحة
-                                        genai.configure(api_key="AQ.Ab8RN6LSPixEE0F_pMfnUp8nY4kwGd4gCNy9eNV5RXMhPNbcJA")
-                                        
-                                        # استخدام النموذج المستقر
-                                        model = genai.GenerativeModel("gemini-1.5-flash")
-                                        
+                                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+                                        headers = {"Content-Type": "application/json"}
                                         ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
+                                        
+                                        payload = {
+                                            "contents": [{
+                                                "parts": [{"text": ai_prompt}]
+                                            }]
+                                        }
 
-                                        response = model.generate_content(ai_prompt)
-                                        ai_response = response.text
-                                        
-                                        st.write(ai_response)
-                                        st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
-                                        
+                                        res = requests.post(url, json=payload, headers=headers, timeout=30)
+                                        res_json = res.json()
+
+                                        if res.status_code == 200:
+                                            ai_response = res_json['candidates'][0]['content']['parts'][0]['text']
+                                            st.write(ai_response)
+                                            st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
+                                        else:
+                                            err_msg = res_json.get('error', {}).get('message', 'خطأ غير معروف')
+                                            st.error(f"❌ خطأ من Google API ({res.status_code}): {err_msg}")
+                                            
                                     except Exception as e:
-                                        st.error(f"❌ خطأ في الاتصال بالذكاء الاصطناعي: {e}")
+                                        st.error(f"❌ فشل الاتصال بالخادم: {e}")
 
 st.markdown("---")
 st.markdown(
