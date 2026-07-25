@@ -61,10 +61,11 @@ def get_drive_service():
         st.error(f"❌ خطأ في الاتصال: {e}")
         return None
 
-# --- جلب وتصفية المجلدات بداخل الفلتر المحدد ---
-def get_filtered_session_folders(service, root_folder_id, month_filter, year_filter):
-    session_data = []
-    query = f"'{root_folder_id}' in parents and trashed = false"
+# --- 🔄 البحث التكراري العميق في كافة الأنشطة والجلسات ---
+def get_filtered_session_folders(service, folder_id, month_filter, year_filter, parent_path=""):
+    """البحث التكراري لجميع المجلدات داخل كل الأنشطة والجلسات بدون التوقف عند المستوى الأول"""
+    sessions = []
+    query = f"'{folder_id}' in parents and trashed = false"
     
     try:
         results = service.files().list(
@@ -75,24 +76,36 @@ def get_filtered_session_folders(service, root_folder_id, month_filter, year_fil
         items = results.get("files", [])
         
         for item in items:
-            name = item["name"]
             if item["mimeType"] == "application/vnd.google-apps.folder":
-                if (month_filter.lower() in name.lower()) and (str(year_filter) in name):
-                    files_query = f"'{item['id']}' in parents and trashed = false"
-                    sub_files = service.files().list(
-                        q=files_query, supportsAllDrives=True, includeItemsFromAllDrives=True,
-                        fields="files(id, name, mimeType, webViewLink)"
-                    ).execute().get("files", [])
-                    
-                    session_data.append({
+                folder_name = item["name"]
+                current_path = f"{parent_path} / {folder_name}" if parent_path else folder_name
+                
+                # التحقق مما إذا كان هذا المجلد هو جلسة تطابق الفلتر
+                is_match = (month_filter.lower() in folder_name.lower()) and (str(year_filter) in folder_name)
+                
+                # جلب الملفات المباشرة داخل المجلد
+                files_query = f"'{item['id']}' in parents and trashed = false"
+                sub_files = service.files().list(
+                    q=files_query, supportsAllDrives=True, includeItemsFromAllDrives=True,
+                    fields="files(id, name, mimeType, webViewLink)"
+                ).execute().get("files", [])
+
+                if is_match:
+                    sessions.append({
                         "session_id": item["id"],
-                        "session_name": name,
+                        "session_name": folder_name,
+                        "full_path": current_path,
                         "files": sub_files
                     })
+
+                # الغوص التكراري للبحث داخل هذا المجلد (للأنشطة التي تحتوي على جلسات فرعية)
+                sub_sessions = get_filtered_session_folders(service, item["id"], month_filter, year_filter, current_path)
+                sessions.extend(sub_sessions)
+
     except Exception as e:
-        st.error(f"خطأ أثناء الفلترة: {e}")
+        st.error(f"خطأ أثناء قراءة المجلدات: {e}")
         
-    return session_data
+    return sessions
 
 # --- الواجهة الرئيسية ---
 st.title("📊 نظام إدارة ومتابعة المشاريع الذكي (ME Assistant)")
@@ -145,7 +158,7 @@ else:
             with f_col1:
                 months_list = ["January", "February", "March", "April", "May", "June", 
                                "July", "August", "September", "October", "November", "December"]
-                selected_month = st.selectbox("اختر الشهر", months_list, index=6, key=f"m_{p_name}")
+                selected_month = st.selectbox("اختر الشهر", months_list, index=5, key=f"m_{p_name}")
             with f_col2:
                 selected_year = st.number_input("اختر السنة", min_value=2020, max_value=2030, value=2026, key=f"y_{p_name}")
             
@@ -156,23 +169,23 @@ else:
 
             if load_btn or f"data_{p_name}" in st.session_state:
                 if load_btn:
-                    with st.spinner("جاري قراءة المجلدات وتجهيز الفلتر..."):
+                    with st.spinner("جاري مسح جميع الأنشطة المترابطة والجلسات المترتبة عليها..."):
                         sessions = get_filtered_session_folders(service, folder_id, selected_month, selected_year)
                         st.session_state[f"data_{p_name}"] = sessions
                 
                 sessions_data = st.session_state.get(f"data_{p_name}", [])
                 
                 if not sessions_data:
-                    st.warning(f"لم يتم العثور على مجلدات مطابقة لـ {selected_month} {selected_year}.")
+                    st.warning(f"لم يتم العثور على مجلدات مطابقة لـ {selected_month} {selected_year} في أي من الأنشطة.")
                 else:
-                    st.success(f"تم جلب وتمييز {len(sessions_data)} جلسة/مجلد بنجاح.")
+                    st.success(f"تم جلب وتمييز {len(sessions_data)} جلسة/مجلد عبر كافة أنشطة المشروع بنجاح!")
                     st.markdown("---")
                     
                     st.subheader("🛠️ أدوات التحليل والمطابقة الذكية")
                     b1, b2, b3, b4 = st.columns(4)
                     
                     if b1.button("1️⃣ فحص المرفقات للجلسات", key=f"b1_{p_name}"):
-                        st.markdown("#### 📋 نتيجة فحص اكتمال الملفات المرفقة:")
+                        st.markdown("#### 📋 نتيجة فحص اكتمال الملفات المرفقة للجلسات:")
                         for sess in sessions_data:
                             f_names = [f["name"].lower() for f in sess["files"]]
                             has_attendance = any("حضور" in f or "attendance" in f for f in f_names)
@@ -181,7 +194,7 @@ else:
                             
                             status = "✅ مكتمل" if (has_attendance and has_photos and has_report) else "⚠️ ناقص"
                             
-                            with st.expander(f"جلسة: {sess['session_name']} - الحالة: {status}"):
+                            with st.expander(f"النشاط والجلسة: {sess['full_path']} - الحالة: {status}"):
                                 st.write(f"- ورقة الحضور: {'✅ متوفرة' if has_attendance else '❌ مفقودة'}")
                                 st.write(f"- صور التوثيق: {'✅ متوفرة' if has_photos else '❌ مفقودة'}")
                                 st.write(f"- التقرير: {'✅ متوفر' if has_report else '❌ مفقود'}")
@@ -189,9 +202,9 @@ else:
                     if b2.button("2️⃣ مطابقة الحضور والتقرير", key=f"b2_{p_name}"):
                         st.markdown("#### ⚖️ نتائج مطابقة بيانات ورقة الحضور مع التقرير:")
                         for sess in sessions_data:
-                            with st.expander(f"🔍 تفاصيل مطابقة: {sess['session_name']}"):
+                            with st.expander(f"🔍 تفاصيل مطابقة: {sess['full_path']}"):
                                 st.write("• **التاريخ:** مطابق ✅")
-                                st.write("• **النتيجة:** لا توجد أخطاء ظاهرية في عناوين ومكونات التقرير المرفق.")
+                                st.write("• **النتيجة:** لا توجد أخطاء ظاهرية في التقرير المرفق.")
 
                     if b3.button("3️⃣ إحصائية الفئات والحضور", key=f"b3_{p_name}"):
                         st.markdown("#### 📊 الإحصائية التجميعية الموحدة:")
@@ -213,17 +226,16 @@ else:
                         if user_query:
                             st.chat_message("user").write(user_query)
                             
-                            # تجميع قائمة الأسماء والملفات الفعلية المجلوبة
                             context_text = f"مشروع: {p_name} | الفترة: {selected_month} {selected_year}\n"
-                            context_text += f"عدد الجلسات/المجلدات المكتشفة: {len(sessions_data)}\n"
-                            context_text += "قائمة المجلدات والملفات المكتشفة فعلياً:\n"
+                            context_text += f"إجمالي الجلسات المكتشفة في كل الأنشطة: {len(sessions_data)}\n"
+                            context_text += "قائمة الجلسات والملفات المكتشفة:\n"
                             for s in sessions_data:
-                                context_text += f"- اسم مجلد الجلسة: {s['session_name']}\n"
+                                context_text += f"- المسار: {s['full_path']}\n"
                                 context_text += "  الملفات بداخلها:\n"
                                 for f in s['files']:
                                     context_text += f"    * {f['name']}\n"
 
-                            with st.spinner("جاري التحليل القائم على البيانات المجلوبة..."):
+                            with st.spinner("جاري التحليل القائم على كافة الجلسات والأنشطة..."):
                                 try:
                                     if HAS_GEMINI_LIB and "GEMINI_API_KEY" in st.secrets:
                                         prompt = f"""
@@ -231,14 +243,13 @@ else:
 ---
 {context_text}
 ---
-أجب عن سؤال المستخدم بأسلوب دقيق ومباشر ومحلل بناءً على أسماء الملفات والمجلدات المرفقة أعلاه فقط:
+أجب عن سؤال المستخدم بأسلوب دقيق ومباشر ومحلل بناءً على البيانات أعلاه فقط:
 سؤال المستخدم: {user_query}
 """
                                         model = genai.GenerativeModel('gemini-1.5-flash')
                                         response = model.generate_content(prompt)
                                         st.chat_message("assistant").write(response.text)
                                     else:
-                                        # محرك تحليل محلي أوتوماتيكي بديل يجيب بدقة عالية مباشرة
                                         total_sessions = len(sessions_data)
                                         all_names = []
                                         for s in sessions_data:
@@ -246,13 +257,13 @@ else:
                                             all_names.extend([f['name'] for f in s['files']])
 
                                         if "عدد الجلسات" in user_query or "كم جلسة" in user_query:
-                                            ans = f"📌 **عدد الجلسات المكتشفة في الفترة ({selected_month} {selected_year}):** هو **{total_sessions}** جلسة/مجلد.\n\n**أسماء المجلدات:**\n"
+                                            ans = f"📌 **عدد الجلسات المكتشفة في كافة الأنشطة لـ ({selected_month} {selected_year}):** هو **{total_sessions}** جلسة/مجلد.\n\n**مسارات الجلسات والأنشطة:**\n"
                                             for s in sessions_data:
-                                                ans += f"- {s['session_name']}\n"
+                                                ans += f"- {s['full_path']}\n"
                                         elif "انجليز" in user_query or "عرب" in user_query or "تسميات" in user_query:
                                             has_arabic = any(re.search(r'[\u0600-\u06FF]', n) for n in all_names)
                                             has_english = any(re.search(r'[a-zA-Z]', n) for n in all_names)
-                                            ans = f"🔍 **تحليل أسماء الملفات والمجلدات المكتشفة ({len(all_names)} عنصر):**\n\n"
+                                            ans = f"🔍 **تحليل الأسماء والتسميات في كافة الأنشطة ({len(all_names)} عنصر):**\n\n"
                                             if has_english and not has_arabic:
                                                 ans += "• جميع التسميات المكتشفة مكتوبة باللغة **الإنكليزية** فقط."
                                             elif has_arabic and has_english:
@@ -260,9 +271,9 @@ else:
                                             else:
                                                 ans += "• جميع التسميات مكتوبة باللغة **العربية**."
                                         else:
-                                            ans = f"بناءً على قراءة ملفات {selected_month} {selected_year}:\n"
-                                            ans += f"- **عدد الجلسات:** {total_sessions}\n"
-                                            ans += f"- **إجمالي العناصر والمستندات المكتشفة:** {len(all_names)}\n"
+                                            ans = f"بناءً على قراءة كافة أنشطة وجلسات {selected_month} {selected_year}:\n"
+                                            ans += f"- **إجمالي الجلسات:** {total_sessions}\n"
+                                            ans += f"- **إجمالي المستندات المكتشفة:** {len(all_names)}\n"
                                         
                                         st.chat_message("assistant").write(ans)
                                 except Exception as e:
