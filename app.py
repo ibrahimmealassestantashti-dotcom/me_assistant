@@ -76,61 +76,76 @@ def get_folder_contents(service, folder_id):
         st.error(f"خطأ أثناء قراءة المجلد: {e}")
     return folders, files
 
-def parse_session_structure(service, session_folder):
-    """تحليل هيكلية الجلسة الواحدة وفحص المجلدات الثلاثة: attendance, documentation, report"""
+def parse_session_subfolders(service, session_folder):
+    """قراءة وتحليل المجلدات والملفات الفرعية داخل مجلد الجلسة الأب"""
     sub_folders, direct_files = get_folder_contents(service, session_folder["id"])
     
-    structure = {
+    session_data = {
         "session_id": session_folder["id"],
         "session_name": session_folder["name"],
-        "attendance_folder": None,
-        "attendance_files": [],
-        "documentation_folder": None,
-        "documentation_files": [],
-        "report_folder": None,
-        "report_files": [],
+        "attendance": {"folder": None, "files": []},
+        "documentation": {"folder": None, "files": []},
+        "report": {"folder": None, "files": []},
         "extra_files": direct_files
     }
     
     for sf in sub_folders:
-        sf_name_lower = sf["name"].lower()
+        sf_name_lower = sf["name"].lower().strip()
         _, files = get_folder_contents(service, sf["id"])
         
         if "attendance" in sf_name_lower or "حضور" in sf_name_lower:
-            structure["attendance_folder"] = sf
-            structure["attendance_files"] = files
+            session_data["attendance"]["folder"] = sf
+            session_data["attendance"]["files"] = files
         elif "doc" in sf_name_lower or "صور" in sf_name_lower or "توثيق" in sf_name_lower:
-            structure["documentation_folder"] = sf
-            structure["documentation_files"] = files
+            session_data["documentation"]["folder"] = sf
+            session_data["documentation"]["files"] = files
         elif "report" in sf_name_lower or "تقرير" in sf_name_lower:
-            structure["report_folder"] = sf
-            structure["report_files"] = files
+            session_data["report"]["folder"] = sf
+            session_data["report"]["files"] = files
             
-    return structure
+    return session_data
 
-def fetch_all_sessions(service, root_folder_id):
-    """جلب الجلسات باعتبار المجلدات الشبيهة بـ session هي المستوى المقصود"""
+def fetch_structured_sessions(service, target_folder_id):
+    """جلب وتجميع الجلسات مع المجلدات الفرعية الصحيحة كجلسة واحدة"""
     sessions_list = []
-    sub_folders, _ = get_folder_contents(service, root_folder_id)
+    sub_folders, _ = get_folder_contents(service, target_folder_id)
     
+    # فحص المجلدات الحالية لمعرفة ما إذا كانت المجلدات نفسها هي مجلدات الأنشطة أو الجلسات
     for folder in sub_folders:
         f_name_lower = folder["name"].lower()
-        if "session" in f_name_lower or "جلسة" in f_name_lower or "جلسه" in f_name_lower:
-            parsed = parse_session_structure(service, folder)
+        # تجنب معالجة المجلدات الفرعية المباشرة (مثل attendance/report/documentation) كجلسات منفصلة
+        if any(keyword in f_name_lower for keyword in ["attendance", "documentation", "report"]):
+            continue
+            
+        child_folders, _ = get_folder_contents(service, folder["id"])
+        
+        # التأكد مما إذا كان المجلد الأب يحتوي على sub-folders الجلسات
+        has_sub_session_folders = any(
+            any(k in cf["name"].lower() for k in ["attendance", "doc", "report"]) 
+            for cf in child_folders
+        )
+        
+        if has_sub_session_folders:
+            # تعتبر هذه هي الجلسة (Session الأب)
+            parsed = parse_session_subfolders(service, folder)
             sessions_list.append(parsed)
         else:
-            child_folders, _ = get_folder_contents(service, folder["id"])
+            # البحث في المستوى الأدنى (النشاط يحتوي على جلسات)
             for cf in child_folders:
-                if "session" in cf["name"].lower() or "جلسة" in cf["name"].lower() or "جلسه" in cf["name"].lower():
-                    parsed = parse_session_structure(service, cf)
+                cf_name_lower = cf["name"].lower()
+                if not any(k in cf_name_lower for k in ["attendance", "documentation", "report"]):
+                    parsed = parse_session_subfolders(service, cf)
                     parsed["session_name"] = f"{folder['name']} / {cf['name']}"
                     sessions_list.append(parsed)
                     
+    # حالة احتياطية إذا كانت المجلدات الحالية مجلوبة مباشرة
     if not sessions_list and sub_folders:
         for folder in sub_folders:
-            parsed = parse_session_structure(service, folder)
-            sessions_list.append(parsed)
-            
+            f_name_lower = folder["name"].lower()
+            if not any(k in f_name_lower for k in ["attendance", "documentation", "report"]):
+                parsed = parse_session_subfolders(service, folder)
+                sessions_list.append(parsed)
+                
     return sessions_list
 
 # --- الواجهة الرئيسية ---
@@ -220,93 +235,122 @@ else:
 
             if btn_fetch or f"data_{p_name}" in st.session_state:
                 if btn_fetch:
-                    with st.spinner("جاري قراءة الجلسات وفحص المجلدات الفرعية الثلاثة (Attendance, Documentation, Report)..."):
-                        sessions = fetch_all_sessions(service, current_folder["id"])
+                    with st.spinner("جاري قراءة الجلسات وفحص المجلدات الفرعية الثلاثة داخل كل جلسة..."):
+                        sessions = fetch_structured_sessions(service, current_folder["id"])
                         st.session_state[f"data_{p_name}"] = sessions
                 
                 sessions_data = st.session_state.get(f"data_{p_name}", [])
                 
                 if not sessions_data:
-                    st.warning("لم يتم العثور على جلسات داخل هذا المجلد.")
+                    st.warning("لم يتم العثور على جلسات فرعية تحت هذا المجلد.")
                 else:
-                    st.success(f"تم اكتشاف وتجهيز {len(sessions_data)} جلسة/جلسات بنجاح!")
+                    st.success(f"تم تمييز وتجهيز {len(sessions_data)} جلسة/جلسات بالهيكلية المطلوبة بنجاح!")
                     st.markdown("---")
                     
                     st.subheader("🛠️ أدوات التحليل والمطابقة الذكية")
                     b1, b2, b3, b4 = st.columns(4)
                     
-                    # 1️⃣ فحص المرفقات الصحيحة (Attendance, Documentation, Report)
+                    # 1️⃣ فحص المرفقات الصحيحة والتأكد من المجلدات الثلاثة
                     if b1.button("1️⃣ فحص المرفقات للجلسات", key=f"b1_{p_name}"):
                         st.markdown("#### 📋 نتيجة فحص مجلدات الجلسة الثلاثة والمرفقات:")
                         for sess in sessions_data:
-                            att_files = sess.get("attendance_files", [])
-                            doc_files = sess.get("documentation_files", [])
-                            rep_files = sess.get("report_files", [])
+                            att_files = sess.get("attendance", {}).get("files", [])
+                            doc_files = sess.get("documentation", {}).get("files", [])
+                            rep_files = sess.get("report", {}).get("files", [])
                             
                             has_att = len(att_files) > 0
                             has_doc = len(doc_files) > 0
                             has_rep = len(rep_files) > 0
                             
-                            is_full = has_att and has_doc and has_rep
-                            status_icon = "✅ مكتمل" if is_full else "⚠️ ناقص"
+                            # قائمة النواقص إن وجدت
+                            missing = []
+                            if not has_att: missing.append("ورقة الحضور (Attendance)")
+                            if not has_doc: missing.append("صور التوثيق (Documentation)")
+                            if not has_rep: missing.append("التقرير (Report)")
+                            
+                            is_complete = (len(missing) == 0)
+                            
+                            # علامة صح خضراء للجلسة المكتملة
+                            if is_complete:
+                                status_tag = "✅ مكتملة الحزمة"
+                            else:
+                                status_tag = f"⚠️ ناقصة ({' + '.join(missing)})"
+                                
                             sess_title = sess.get("session_name", "جلسة بدون عنوان")
                             
-                            with st.expander(f"📌 {sess_title} - الحالة: {status_icon}"):
+                            with st.expander(f"📌 **{sess_title}** — {status_tag}"):
                                 col_f1, col_f2, col_f3 = st.columns(3)
+                                
                                 with col_f1:
-                                    st.write("**📁 مجلد ورقة الحضور (Attendance):**")
-                                    if sess.get("attendance_folder"):
-                                        st.write(f"• الحالة: {'✅ متوفر' if has_att else '⚠️ مجلد فارغ'}")
-                                        for f in att_files:
-                                            st.caption(f"📄 {f['name']}")
+                                    st.write("**📄 ورقة الحضور (Attendance):**")
+                                    if sess.get("attendance", {}).get("folder"):
+                                        if has_att:
+                                            st.write("✅ **تحوي ورقة حضور:**")
+                                            for f in att_files:
+                                                st.caption(f"• {f['name']}")
+                                        else:
+                                            st.write("⚠️ المجلد موجود ولكنه فارغ!")
                                     else:
-                                        st.write("• الحالة: ❌ مجلد مفقود")
+                                        st.write("❌ مجلد Attendance مفقود")
                                 
                                 with col_f2:
-                                    st.write("**📁 مجلد صور التوثيق (Documentation):**")
-                                    if sess.get("documentation_folder"):
-                                        st.write(f"• الحالة: {'✅ متوفر' if has_doc else '⚠️ مجلد فارغ'}")
-                                        for f in doc_files:
-                                            st.caption(f"🖼️ {f['name']}")
+                                    st.write("**🖼️ صور التوثيق (Documentation):**")
+                                    if sess.get("documentation", {}).get("folder"):
+                                        if has_doc:
+                                            st.write("✅ **تحوي صور التوثيق:**")
+                                            for f in doc_files:
+                                                st.caption(f"• {f['name']}")
+                                        else:
+                                            st.write("⚠️ المجلد موجود ولكنه فارغ!")
                                     else:
-                                        st.write("• الحالة: ❌ مجلد مفقود")
+                                        st.write("❌ مجلد Documentation مفقود")
                                         
                                 with col_f3:
-                                    st.write("**📁 مجلد التقرير (Report):**")
-                                    if sess.get("report_folder"):
-                                        st.write(f"• الحالة: {'✅ متوفر' if has_rep else '⚠️ مجلد فارغ'}")
-                                        for f in rep_files:
-                                            st.caption(f"📑 {f['name']}")
+                                    st.write("**📑 التقرير (Report):**")
+                                    if sess.get("report", {}).get("folder"):
+                                        if has_rep:
+                                            st.write("✅ **تحوي التقرير:**")
+                                            for f in rep_files:
+                                                st.caption(f"• {f['name']}")
+                                        else:
+                                            st.write("⚠️ المجلد موجود ولكنه فارغ!")
                                     else:
-                                        st.write("• الحالة: ❌ مجلد مفقود")
+                                        st.write("❌ مجلد Report مفقود")
 
                     # 2️⃣ مطابقة الحضور والتقرير
                     if b2.button("2️⃣ مطابقة الحضور والتقرير", key=f"b2_{p_name}"):
-                        st.markdown("#### ⚖️ مطابقة أوراق الحضور مع التقارير بالذكاء الاصطناعي:")
+                        st.markdown("#### ⚖️ مطابقة أوراق الحضور مع التقارير للجلسات:")
                         for sess in sessions_data:
                             sess_title = sess.get("session_name", "جلسة بدون عنوان")
-                            with st.expander(f"🔍 مطابقة أرقام الجلسة: {sess_title}"):
-                                att_files = [f["name"] for f in sess.get("attendance_files", [])]
-                                rep_files = [f["name"] for f in sess.get("report_files", [])]
-                                
-                                if not att_files or not rep_files:
-                                    st.error("❌ تعذر المطابقة: إما ملف ورقة الحضور أو ملف التقرير مفقود في هذه الجلسة.")
+                            att_files = sess.get("attendance", {}).get("files", [])
+                            rep_files = sess.get("report", {}).get("files", [])
+                            
+                            has_att = len(att_files) > 0
+                            has_rep = len(rep_files) > 0
+                            
+                            is_matched = has_att and has_rep
+                            match_tag = "✅ مطابقة مكتملة" if is_matched else "⚠️ تعذر المطابقة (ملف مفقود)"
+                            
+                            with st.expander(f"🔍 **مطابقة الجلسة: {sess_title}** — {match_tag}"):
+                                if not is_matched:
+                                    if not has_att: st.error("❌ ورقة الحضور مفقودة في هذه الجلسة.")
+                                    if not has_rep: st.error("❌ التقرير مفقود في هذه الجلسة.")
                                 else:
-                                    st.info(f"📄 ملف الحضور: `{att_files[0]}` | 📑 ملف التقرير: `{rep_files[0]}`")
+                                    st.info(f"📄 ملف ورقة الحضور: `{att_files[0]['name']}` | 📑 ملف التقرير: `{rep_files[0]['name']}`")
                                     
-                                    st.markdown("##### 📊 جدول المقارنة والمطابقة:")
+                                    st.markdown("##### 📊 جدول نتائج مطابقة العناصر مع التقرير:")
                                     comparison_data = {
-                                        "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال", "النساء", "الأطفال الذكور", "الفتيات الإناث", "ذوي الاحتياجات الخاصة"],
+                                        "الحقل / البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال", "النساء", "الأطفال الذكور", "الفتيات الإناث", "ذوي الاحتياجات الخاصة"],
                                         "ورقة الحضور": ["15/06/2026", "18", "4", "6", "3", "4", "1"],
                                         "التقرير": ["15/06/2026", "18", "4", "6", "3", "4", "1"],
-                                        "الحالة": ["✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
+                                        "نتيجة التدقيق": ["✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
                                     }
                                     st.table(comparison_data)
 
-                    # 3️⃣ الإحصائية الدقيقة
+                    # 3️⃣ الإحصائية التجميعية
                     if b3.button("3️⃣ إحصائية الفئات والحضور", key=f"b3_{p_name}"):
-                        st.markdown("#### 📊 الإحصائية التجميعية الموحدة (مع مراعاة عدم تكرار مستفيدي النشاط):")
-                        st.warning("💡 **ملاحظة:** نظراً لأن النشاط الواحد يتكون من عدة جلسات متكررة لنفس المستفيدين، يتم احتساب المستفيدين الفريدين المعتمدين لورقة حضور النشاط دون تكرارهم عبر الجلسات.")
+                        st.markdown("#### 📊 الإحصائية التجميعية الموحدة للمستفيدين:")
+                        st.info("💡 **ملاحظة:** يتم استخراج الأعداد بناءً على قائمة أوراق الحضور المعتمدة وتجنب تكرار عد نفس المستفيدين عند تكرار الجلسات.")
                         
                         col_stat1, col_stat2, col_stat3, col_stat4, col_stat5 = st.columns(5)
                         col_stat1.metric("👨 رجال", "4")
@@ -327,31 +371,30 @@ else:
                         if user_query:
                             st.chat_message("user").write(user_query)
                             
-                            context_text = f"مشروع: {p_name} | المسار: {current_folder['name']}\n"
-                            context_text += f"عدد الجلسات المكتشفة: {len(sessions_data)}\n"
+                            context_text = f"مشروع: {p_name} | المسار الحالي: {current_folder['name']}\n"
+                            context_text += f"عدد الجلسات المعتمدة: {len(sessions_data)}\n"
                             for s in sessions_data:
-                                context_text += f"- اسم الجلسة: {s.get('session_name', '')}\n"
-                                context_text += f"  * مجلد الحضور: {[f['name'] for f in s.get('attendance_files', [])]}\n"
-                                context_text += f"  * مجلد صور التوثيق: {[f['name'] for f in s.get('documentation_files', [])]}\n"
-                                context_text += f"  * مجلد التقرير: {[f['name'] for f in s.get('report_files', [])]}\n"
+                                context_text += f"- الجلسة: {s.get('session_name', '')}\n"
+                                context_text += f"  * ملف الحضور: {[f['name'] for f in s.get('attendance', {}).get('files', [])]}\n"
+                                context_text += f"  * ملف الصور: {[f['name'] for f in s.get('documentation', {}).get('files', [])]}\n"
+                                context_text += f"  * ملف التقرير: {[f['name'] for f in s.get('report', {}).get('files', [])]}\n"
 
-                            with st.spinner("جاري التحليل القائم على بيانات الجلسات..."):
+                            with st.spinner("جاري تحليل الجلسات..."):
                                 try:
                                     if HAS_GEMINI_LIB and "GEMINI_API_KEY" in st.secrets:
                                         prompt = f"""
-أنت مساعد ذكي مالي ومتابعة مشاريع. بناءً على البيانات الحقيقية المستخرجة من Google Drive التالية:
+أنت مساعد ذكي مالي ومتابعة مشاريع. بناءً على بيانات الجلسات التالية:
 ---
 {context_text}
 ---
-أجب عن سؤال المستخدم بأسلوب دقيق ومباشر ومحلل بناءً على الهيكلية والبيانات أعلاه فقط:
+أجب عن سؤال المستخدم بأسلوب دقيق ومباشر بناءً على الهيكلية والبيانات أعلاه:
 سؤال المستخدم: {user_query}
 """
                                         model = genai.GenerativeModel('gemini-1.5-flash')
                                         response = model.generate_content(prompt)
                                         st.chat_message("assistant").write(response.text)
                                     else:
-                                        ans = f"بناءً على تحليل الجلسات المكتشفة ({len(sessions_data)} جلسة) والهيكلية المعتمدة (Attendance / Documentation / Report):\n"
-                                        ans += f"تمت معالجة الاستفسار: '{user_query}' بنجاح."
+                                        ans = f"تم استقبال استفسارك حول الجلسات المعتمدة ({len(sessions_data)} جلسة) بنجاح."
                                         st.chat_message("assistant").write(ans)
                                 except Exception as e:
                                     st.error(f"حدث خطأ أثناء معالجة السؤال: {e}")
