@@ -13,26 +13,18 @@ st.set_page_config(
 )
 
 CONFIG_FILE = "saved_projects.json"
-st.set_page_config(
-    page_title="مساعد إدارة ومتابعة المشاريع - ME Assistant",
-    page_icon="📊",
-    layout="wide"
-)
 
-CONFIG_FILE = "saved_projects.json"
-
-# ضع المفتاح هنا مباشرة لضمان عمله فوراً دون أخطاء في الـ Secrets
+# تعيين مفتاح الذكاء الاصطناعي مباشرة وصحيح برمجياً
 gemini_api_key = "AQ.Ab8RN6LSPixEE0F_pMfnUp8nY4kwGd4gCNy9eNV5RXMhPNbcJA"
 
 def load_saved_projects():
     if os.path.exists(CONFIG_FILE):
-# ... باقي الكود ...
-# قراءة مفتاح الذكاء الاصطناعي بطريقة آمنة تماماً
-gemini_api_key = None
-try:
-    if "GEMINI_API_KEY" in st.secrets:
-        gemini_api_key = st.secrets["GEMINI_API_KEY"]
-except Exception:
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
     pass
 
 if not gemini_api_key:
