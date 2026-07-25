@@ -4,6 +4,7 @@ import os
 import time
 import io
 import tempfile
+import re
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -155,6 +156,12 @@ def get_file_content_bytes(service, file_id, mime_type):
     except Exception:
         return None
 
+def extract_number(text):
+    if not text:
+        return 0
+    match = re.search(r'\d+', str(text))
+    return int(match.group()) if match else 0
+
 def analyze_session_files_with_ai(service, session_info, api_key):
     if "cached_metrics" in session_info:
         return session_info["cached_metrics"]
@@ -223,7 +230,6 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         for uf in uploaded_gemini_files:
             prompt.append(uf)
 
-        # استخدام generate_content لدعم رفع الملفات المتعددة والمرفقات
         response = client.models.generate_content(
             model="gemini-3.5-flash",
             contents=prompt,
@@ -444,14 +450,11 @@ else:
                         if GEMINI_API_KEY:
                             for s in sessions_data:
                                 att_v, _, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
-                                try:
-                                    tot_men += int(att_v[2])
-                                    tot_women += int(att_v[3])
-                                    tot_boys += int(att_v[4])
-                                    tot_girls += int(att_v[5])
-                                    tot_pwd += int(att_v[6])
-                                except:
-                                    pass
+                                tot_men += extract_number(att_v[2])
+                                tot_women += extract_number(att_v[3])
+                                tot_boys += extract_number(att_v[4])
+                                tot_girls += extract_number(att_v[5])
+                                tot_pwd += extract_number(att_v[6])
                             
                         col_stat1, col_stat2, col_stat3, col_stat4, col_stat5 = st.columns(5)
                         col_stat1.metric("👨 رجال", str(tot_men))
@@ -496,7 +499,6 @@ else:
                                         
                                         try:
                                             client = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                            # استخدام Interactions API للدردشة النصية
                                             interaction = client.interactions.create(
                                                 model="gemini-3.5-flash",
                                                 input=ai_prompt,
