@@ -153,14 +153,21 @@ def call_gemini_api(prompt, api_key):
                 }
         return MockResponse()
     except Exception as e:
+        err_str = str(e)
+        status_code = 429 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str else 500
         class MockErrorResponse:
-            status_code = 500
-            text = str(e)
-            def json(self):
-                return {'error': {'message': str(e)}}
-        return MockErrorResponse()
+            pass
+        res = MockErrorResponse()
+        res.status_code = status_code
+        res.text = err_str
+        res.json = lambda: {'error': {'message': err_str}}
+        return res
 
 def extract_session_metrics_with_ai(session_info, api_key):
+    # نظام التخزين المؤقت لمنع تكرار استهلاك الحصة (Rate Limit)
+    if "cached_metrics" in session_info:
+        return session_info["cached_metrics"]
+        
     att_files = session_info.get("attendance", {}).get("files", [])
     rep_files = session_info.get("report", {}).get("files", [])
     
@@ -179,19 +186,32 @@ def extract_session_metrics_with_ai(session_info, api_key):
     أجب بصيغة JSON صارمة فقط دون أي نصوص إضافية، تحتوي على المصفوفات السابقة بالترتيب.
     """
     
+    default_att = ["--/--/--", "0", "0", "0", "0", "0", "0"]
+    default_rep = ["--/--/--", "0", "0", "0", "0", "0", "0"]
+    default_diff = ["✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
+
     try:
         res = call_gemini_api(prompt, api_key)
         if res.status_code == 200:
             text_res = res.json()['candidates'][0]['content']['parts'][0]['text']
             cleaned = text_res.replace("```json", "").replace("```", "").strip()
             data = json.loads(cleaned)
-            return data["attendance_data"], data["report_data"], data["differences"]
+            session_info["cached_metrics"] = (
+                data.get("attendance_data", default_att), 
+                data.get("report_data", default_rep), 
+                data.get("differences", default_diff)
+            )
+        elif res.status_code == 429:
+            st.warning("⚠️ تم بلوغ الحد الأقصى المجاني لطلبات Gemini API (Quota Exceeded). يتم استخدام قيم افتراضية مؤقتة لتجنب توقف التطبيق.")
+            session_info["cached_metrics"] = (default_att, default_rep, default_diff)
         else:
             st.error(f"خطأ في الاتصال بـ Gemini API: {res.text}")
+            session_info["cached_metrics"] = (default_att, default_rep, default_diff)
     except Exception as e:
         st.error(f"خطأ استثناء: {e}")
+        session_info["cached_metrics"] = (default_att, default_rep, default_diff)
         
-    return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ تعذر التحليل", "⚠️ تعذر التحليل", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
+    return session_info["cached_metrics"]
 
 def has_session_mismatch(session_info, api_key):
     _, _, diff_vals = extract_session_metrics_with_ai(session_info, api_key)
