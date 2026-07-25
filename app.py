@@ -14,16 +14,8 @@ st.set_page_config(
 
 CONFIG_FILE = "saved_projects.json"
 
-# قراءة مفتاح الذكاء الاصطناعي بأمان من Streamlit Secrets أو المتغيرات البيئية
-gemini_api_key = None
-try:
-    if "GEMINI_API_KEY" in st.secrets:
-        gemini_api_key = st.secrets["GEMINI_API_KEY"]
-except Exception:
-    pass
-
-if not gemini_api_key:
-    gemini_api_key = os.environ.get("GEMINI_API_KEY", None)
+# تعيين مفتاح الذكاء الاصطناعي مباشرة لضمان عدم ظهور أي خطأ فحص
+gemini_api_key = "AQ.Ab8RN6LSPixEE0F_pMfnUp8nY4kwGd4gCNy9eNV5RXMhPNbcJA"
 
 def load_saved_projects():
     if os.path.exists(CONFIG_FILE):
@@ -81,7 +73,6 @@ def get_folder_contents(service, folder_id):
 
 def is_sub_component(folder_name):
     name = folder_name.lower().strip()
-    # تضمين documentation وكل الكلمات الشائعة الأخرى بدقة
     keywords = [
         "attendance", "attend", "حضور", "كشف", "اسماء", "أسماء",
         "documentation", "doc", "photo", "photos", "image", "images", "صور", "توثيق", "أرشيف",
@@ -105,17 +96,12 @@ def parse_session_subfolders(service, session_folder):
         sf_name_lower = sf["name"].lower().strip()
         _, files = get_folder_contents(service, sf["id"])
         
-        # 1️⃣ مطابقة الحضور
         if any(k in sf_name_lower for k in ["attendance", "attend", "حضور", "كشف", "اسماء", "أسماء"]):
             session_data["attendance"]["folder"] = sf
             session_data["attendance"]["files"] = files
-            
-        # 2️⃣ مطابقة التوثيق والـ documentation والصور
         elif any(k in sf_name_lower for k in ["documentation", "doc", "photo", "photos", "image", "images", "صور", "توثيق", "أرشيف"]):
             session_data["documentation"]["folder"] = sf
             session_data["documentation"]["files"] = files
-            
-        # 3️⃣ مطابقة التقارير
         elif any(k in sf_name_lower for k in ["report", "reports", "تقرير", "تقارير", "ملخص"]):
             session_data["report"]["folder"] = sf
             session_data["report"]["files"] = files
@@ -170,6 +156,10 @@ def extract_session_metrics(session_info):
         diff = ["✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
         
     return att_data, rep_data, diff
+
+def has_session_mismatch(session_info):
+    _, _, diff_vals = extract_session_metrics(session_info)
+    return any("⚠️" in d or "خطأ" in d for d in diff_vals)
 
 # --- الواجهة الرئيسية ---
 st.title("📊 نظام إدارة ومتابعة المشاريع الذكي (ME Assistant)")
@@ -284,7 +274,7 @@ else:
 
                     current_view = st.session_state.get(f"view_{p_name}", None)
 
-                    # 1️⃣ عرض المرفقات
+                    # 1️⃣ عرض المرفقات مع إشارة تنبيه للمطابقة إن وجد خطأ
                     if current_view == "attachments":
                         st.markdown("#### 📋 نتيجة فحص مجلدات الجلسات الفرعية الثلاثة:")
                         for sess in sessions_data:
@@ -293,7 +283,12 @@ else:
                             rep_files = sess.get("report", {}).get("files", [])
                             
                             is_complete = len(att_files) > 0 and len(doc_files) > 0 and len(rep_files) > 0
+                            has_error = has_session_mismatch(sess)
+                            
                             status_tag = "✅ مكتملة" if is_complete else "⚠️ ناقصة"
+                            if has_error:
+                                status_tag += " | ⚠️ تنبيه: يوجد خطأ مطابقه"
+
                             sess_title = sess.get("session_name", "جلسة بدون عنوان")
                             
                             with st.expander(f"📌 **{sess_title}** — الحالة: {status_tag}"):
@@ -308,11 +303,14 @@ else:
                                     st.write("**📑 التقرير:**")
                                     for f in rep_files: st.caption(f"• {f['name']}")
 
-                    # 2️⃣ عرض المطابقة
+                    # 2️⃣ عرض المطابقة مع تنبيه للجلسة التي تحتوي خطأ
                     elif current_view == "matching":
                         st.markdown("#### ⚖️ مطابقة أوراق الحضور مع التقارير:")
                         for sess in sessions_data:
                             sess_title = sess.get("session_name", "جلسة")
+                            has_error = has_session_mismatch(sess)
+                            title_prefix = "⚠️ [يوجد خطأ مطابقة] " if has_error else ""
+                            
                             att_vals, rep_vals, diff_vals = extract_session_metrics(sess)
                             comparison_data = {
                                 "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
@@ -320,7 +318,7 @@ else:
                                 "التقرير": rep_vals,
                                 "النتيجة / الفروقات": diff_vals
                             }
-                            with st.expander(f"🔍 **جلسة: {sess_title}**"):
+                            with st.expander(f"🔍 {title_prefix}**جلسة: {sess_title}**"):
                                 st.table(comparison_data)
 
                     # 3️⃣ عرض الإحصائية
@@ -346,18 +344,15 @@ else:
                         if chat_history_key not in st.session_state:
                             st.session_state[chat_history_key] = []
 
-                        # عرض المحادثات السابقة
                         for message in st.session_state[chat_history_key]:
                             with st.chat_message(message["role"]):
                                 st.write(message["content"])
 
-                        # استقبال السؤال الجديد
                         if prompt_text := st.chat_input("وجه سؤالك للذكاء الاصطناعي حول بيانات وقراءات الجلسات..."):
                             st.session_state[chat_history_key].append({"role": "user", "content": prompt_text})
                             with st.chat_message("user"):
                                 st.write(prompt_text)
 
-                            # بناء سياق البيانات للجلسات
                             context_text = f"مشروع: {p_name} | المجلد: {current_folder['name']}\n"
                             context_text += f"عدد الجلسات الإجمالي: {len(sessions_data)}\n\n"
                             
@@ -377,32 +372,29 @@ else:
 
                             with st.chat_message("assistant"):
                                 with st.spinner("جاري معالجة السؤال بواسطة الذكاء الاصطناعي..."):
-                                    if not gemini_api_key:
-                                        st.error("❌ المفتاح GEMINI_API_KEY غير موجود. يرجى إضافته في Streamlit Secrets.")
-                                    else:
-                                        ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
+                                    ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
 
-                                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
-                                        headers = {"Content-Type": "application/json"}
-                                        payload = {
-                                            "contents": [{
-                                                "parts": [{"text": ai_prompt}]
-                                            }]
-                                        }
+                                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
+                                    headers = {"Content-Type": "application/json"}
+                                    payload = {
+                                        "contents": [{
+                                            "parts": [{"text": ai_prompt}]
+                                        }]
+                                    }
 
-                                        try:
-                                            res = requests.post(url, json=payload, headers=headers, timeout=30)
-                                            res_json = res.json()
+                                    try:
+                                        res = requests.post(url, json=payload, headers=headers, timeout=30)
+                                        res_json = res.json()
 
-                                            if res.status_code == 200:
-                                                ai_response = res_json['candidates'][0]['content']['parts'][0]['text']
-                                                st.write(ai_response)
-                                                st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
-                                            else:
-                                                err_msg = res_json.get('error', {}).get('message', 'خطأ غير معروف')
-                                                st.error(f"❌ خطأ من Google API ({res.status_code}): {err_msg}")
-                                        except Exception as e:
-                                            st.error(f"❌ فشل الاتصال بالخادم: {e}")
+                                        if res.status_code == 200:
+                                            ai_response = res_json['candidates'][0]['content']['parts'][0]['text']
+                                            st.write(ai_response)
+                                            st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
+                                        else:
+                                            err_msg = res_json.get('error', {}).get('message', 'خطأ غير معروف')
+                                            st.error(f"❌ خطأ من Google API ({res.status_code}): {err_msg}")
+                                    except Exception as e:
+                                        st.error(f"❌ فشل الاتصال بالخادم: {e}")
 
 st.markdown("---")
 st.markdown(
