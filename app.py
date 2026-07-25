@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import os
 import re
+import requests
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -10,20 +11,6 @@ st.set_page_config(
     page_icon="📊",
     layout="wide"
 )
-
-# دعم حزمة الذكاء الاصطناعي الجديدة والقديمة تلقائياً
-HAS_GENAI = False
-try:
-    from google import genai
-    HAS_GENAI = True
-    GENAI_VERSION = "new"
-except ImportError:
-    try:
-        import google.generativeai as old_genai
-        HAS_GENAI = True
-        GENAI_VERSION = "old"
-    except ImportError:
-        HAS_GENAI = False
 
 CONFIG_FILE = "saved_projects.json"
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", None)
@@ -266,7 +253,6 @@ else:
                     st.subheader("🛠️ أدوات التحليل والمطابقة الذكية")
                     b1, b2, b3, b4 = st.columns(4)
                     
-                    # حفظ حالات فتح الأزرار في session_state حتى لا تتصافر عند Rerun
                     if b1.button("1️⃣ فحص المرفقات للجلسات", key=f"b1_{p_name}"):
                         st.session_state[f"view_{p_name}"] = "attachments"
                     if b2.button("2️⃣ مطابقة الحضور والتقرير", key=f"b2_{p_name}"):
@@ -340,14 +326,13 @@ else:
                         if chat_history_key not in st.session_state:
                             st.session_state[chat_history_key] = []
 
-                        # عرض المحادثات القديمة
+                        # عرض المحادثات السابقة
                         for message in st.session_state[chat_history_key]:
                             with st.chat_message(message["role"]):
                                 st.write(message["content"])
 
                         # استقبال السؤال الجديد
                         if prompt_text := st.chat_input("وجه سؤالك للذكاء الاصطناعي حول بيانات وقراءات الجلسات..."):
-                            # إظهار سؤال المستخدم فوراً
                             st.session_state[chat_history_key].append({"role": "user", "content": prompt_text})
                             with st.chat_message("user"):
                                 st.write(prompt_text)
@@ -371,38 +356,33 @@ else:
                             context_text += f"\nالإجمالي الكلي:\n- ذوي الاحتياجات (PWD): {tot_pwd_all}\n- الأولاد: {tot_boys_all}\n- الفتيات: {tot_girls_all}\n"
 
                             with st.chat_message("assistant"):
-                                with st.spinner("جاري معالجة السؤال..."):
-                                    try:
-                                        if HAS_GENAI and gemini_api_key:
-                                            ai_prompt = f"""
-أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.
-اجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:
+                                with st.spinner("جاري معالجة السؤال بواسطة الذكاء الاصطناعي..."):
+                                    if not gemini_api_key:
+                                        st.error("❌ المفتاح GEMINI_API_KEY غير موجود في Streamlit Secrets.")
+                                    else:
+                                        ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
 
---- البيانات الإحصائية النشطة ---
-{context_text}
---- نهاية البيانات ---
+                                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
+                                        headers = {"Content-Type": "application/json"}
+                                        payload = {
+                                            "contents": [{
+                                                "parts": [{"text": ai_prompt}]
+                                            }]
+                                        }
 
-سؤال المستخدم الحالي: {prompt_text}
-"""
-                                            if GENAI_VERSION == "new":
-                                                client = genai.Client(api_key=gemini_api_key)
-                                                response = client.models.generate_content(
-                                                    model='gemini-2.5-flash',
-                                                    contents=ai_prompt
-                                                )
-                                                ai_response = response.text
+                                        try:
+                                            res = requests.post(url, json=payload, headers=headers, timeout=30)
+                                            res_json = res.json()
+
+                                            if res.status_code == 200:
+                                                ai_response = res_json['candidates'][0]['content']['parts'][0]['text']
+                                                st.write(ai_response)
+                                                st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
                                             else:
-                                                old_genai.configure(api_key=gemini_api_key)
-                                                model = old_genai.GenerativeModel('gemini-1.5-flash')
-                                                response = model.generate_content(ai_prompt)
-                                                ai_response = response.text
-                                        else:
-                                            ai_response = f"⚠️ تعذر الاتصال بـ API الذكاء الاصطناعي. يرجى التأكد من إضافة GEMINI_API_KEY بشكل صحيح داخل Secrets. (سؤالك: '{prompt_text}')"
-
-                                        st.write(ai_response)
-                                        st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
-                                    except Exception as e:
-                                        st.error(f"حدث خطأ أثناء الاتصال بالذكاء الاصطناعي: {e}")
+                                                err_msg = res_json.get('error', {}).get('message', 'خطأ غير معروف')
+                                                st.error(f"❌ خطأ من Google API ({res.status_code}): {err_msg}")
+                                        except Exception as e:
+                                            st.error(f"❌ فشل الاتصال بالخادم: {e}")
 
 st.markdown("---")
 st.markdown(
