@@ -61,49 +61,43 @@ def get_drive_service():
         st.error(f"❌ خطأ في الاتصال: {e}")
         return None
 
-# --- 🔄 البحث التكراري العميق في كافة الأنشطة والجلسات ---
-def get_filtered_session_folders(service, folder_id, month_filter, year_filter, parent_path=""):
-    """البحث التكراري لجميع المجلدات داخل كل الأنشطة والجلسات بدون التوقف عند المستوى الأول"""
-    sessions = []
+# --- جلب عناصر مجلد واحد فقط (سريع جداً) ---
+def get_folder_contents(service, folder_id):
     query = f"'{folder_id}' in parents and trashed = false"
-    
+    folders = []
+    files = []
     try:
         results = service.files().list(
             q=query, supportsAllDrives=True, includeItemsFromAllDrives=True,
-            fields="files(id, name, mimeType)"
+            fields="files(id, name, mimeType, webViewLink)"
         ).execute()
         
-        items = results.get("files", [])
-        
-        for item in items:
+        for item in results.get("files", []):
             if item["mimeType"] == "application/vnd.google-apps.folder":
-                folder_name = item["name"]
-                current_path = f"{parent_path} / {folder_name}" if parent_path else folder_name
-                
-                # التحقق مما إذا كان هذا المجلد هو جلسة تطابق الفلتر
-                is_match = (month_filter.lower() in folder_name.lower()) and (str(year_filter) in folder_name)
-                
-                # جلب الملفات المباشرة داخل المجلد
-                files_query = f"'{item['id']}' in parents and trashed = false"
-                sub_files = service.files().list(
-                    q=files_query, supportsAllDrives=True, includeItemsFromAllDrives=True,
-                    fields="files(id, name, mimeType, webViewLink)"
-                ).execute().get("files", [])
-
-                if is_match:
-                    sessions.append({
-                        "session_id": item["id"],
-                        "session_name": folder_name,
-                        "full_path": current_path,
-                        "files": sub_files
-                    })
-
-                # الغوص التكراري للبحث داخل هذا المجلد (للأنشطة التي تحتوي على جلسات فرعية)
-                sub_sessions = get_filtered_session_folders(service, item["id"], month_filter, year_filter, current_path)
-                sessions.extend(sub_sessions)
-
+                folders.append(item)
+            else:
+                files.append(item)
     except Exception as e:
-        st.error(f"خطأ أثناء قراءة المجلدات: {e}")
+        st.error(f"خطأ أثناء قراءة المجلد: {e}")
+    return folders, files
+
+# --- جلب المحتويات العميقة بدءاً من المجلد المختار فقط ---
+def get_deep_contents(service, folder_id, path_prefix=""):
+    sessions = []
+    sub_folders, direct_files = get_folder_contents(service, folder_id)
+    
+    if direct_files:
+        sessions.append({
+            "session_id": folder_id,
+            "session_name": path_prefix.split("/")[-1] if "/" in path_prefix else "المجلد الحالي",
+            "full_path": path_prefix,
+            "files": direct_files
+        })
+        
+    for sf in sub_folders:
+        sub_path = f"{path_prefix} / {sf['name']}" if path_prefix else sf["name"]
+        child_sessions = get_deep_contents(service, sf["id"], sub_path)
+        sessions.extend(child_sessions)
         
     return sessions
 
@@ -150,35 +144,68 @@ else:
 
     for idx, p_name in enumerate(project_names):
         with selected_tab[idx]:
-            folder_id = st.session_state.projects[p_name]
+            root_id = st.session_state.projects[p_name]
             
-            st.subheader(f"📅 تصفية جلسات مشروع: {p_name}")
-            f_col1, f_col2, f_col3 = st.columns([2, 2, 2])
+            # حالة المسار الحالي والتنقل للمشروع
+            path_key = f"path_{p_name}"
+            if path_key not in st.session_state:
+                st.session_state[path_key] = [{"id": root_id, "name": p_name}]
+                
+            current_trail = st.session_state[path_key]
+            current_folder = current_trail[-1]
             
-            with f_col1:
-                months_list = ["January", "February", "March", "April", "May", "June", 
-                               "July", "August", "September", "October", "November", "December"]
-                selected_month = st.selectbox("اختر الشهر", months_list, index=5, key=f"m_{p_name}")
-            with f_col2:
-                selected_year = st.number_input("اختر السنة", min_value=2020, max_value=2030, value=2026, key=f"y_{p_name}")
+            st.subheader(f"📁 متصفح مجلدات مشروع: {p_name}")
             
-            with f_col3:
-                st.write(" ")
-                st.write(" ")
-                load_btn = st.button(f"🔍 قراءة جلسات {selected_month} {selected_year}", key=f"load_{p_name}")
+            # عرض شريط المسار (Breadcrumbs)
+            trail_str = " ➡️ ".join([node["name"] for node in current_trail])
+            st.info(f"📍 **المسار الحالي:** {trail_str}")
+            
+            col_nav1, col_nav2 = st.columns([1, 4])
+            with col_nav1:
+                if len(current_trail) > 1:
+                    if st.button("⬅️ العودة للمجلد السابق", key=f"back_{p_name}"):
+                        st.session_state[path_key].pop()
+                        st.rerun()
+                        
+            # جلب المجلدات الفرعية للمجلد الحالي فوراً وبسرعة
+            sub_folders, direct_files = get_folder_contents(service, current_folder["id"])
+            
+            if sub_folders:
+                folder_options = {sf["name"]: sf["id"] for sf in sub_folders}
+                selected_sub_name = st.selectbox(
+                    "اختر مجلداً/نشاطاً للانتقال إليه وتضييق النطاق:",
+                    ["-- اختر المجلد --"] + list(folder_options.keys()),
+                    key=f"select_folder_{p_name}"
+                )
+                
+                if selected_sub_name != "-- اختر المجلد --":
+                    next_id = folder_options[selected_sub_name]
+                    st.session_state[path_key].append({"id": next_id, "name": selected_sub_name})
+                    st.rerun()
+            else:
+                st.write("ℹ️ لا توجد مجلدات فرعية في هذا المستوى.")
 
-            if load_btn or f"data_{p_name}" in st.session_state:
-                if load_btn:
-                    with st.spinner("جاري مسح جميع الأنشطة المترابطة والجلسات المترتبة عليها..."):
-                        sessions = get_filtered_session_folders(service, folder_id, selected_month, selected_year)
+            st.markdown("---")
+            
+            # زر الجلب النهائي من المجلد المقوف عنده
+            btn_fetch = st.button(
+                f"⚡ جلب وتحليل الجلسات والبيانات من ({current_folder['name']}) وما بعدها", 
+                key=f"fetch_btn_{p_name}",
+                type="primary"
+            )
+
+            if btn_fetch or f"data_{p_name}" in st.session_state:
+                if btn_fetch:
+                    with st.spinner("جاري جلب ملفات المجلد والمستوى المحدد فوراً..."):
+                        sessions = get_deep_contents(service, current_folder["id"], current_folder["name"])
                         st.session_state[f"data_{p_name}"] = sessions
                 
                 sessions_data = st.session_state.get(f"data_{p_name}", [])
                 
                 if not sessions_data:
-                    st.warning(f"لم يتم العثور على مجلدات مطابقة لـ {selected_month} {selected_year} في أي من الأنشطة.")
+                    st.warning("لم يتم العثور على ملفات أو جلسات داخل هذا المجلد.")
                 else:
-                    st.success(f"تم جلب وتمييز {len(sessions_data)} جلسة/مجلد عبر كافة أنشطة المشروع بنجاح!")
+                    st.success(f"تم جلب وتمييز {len(sessions_data)} جلسة/مجلد في هذا المسار بنجاح وبسرعة فائقة!")
                     st.markdown("---")
                     
                     st.subheader("🛠️ أدوات التحليل والمطابقة الذكية")
@@ -194,7 +221,7 @@ else:
                             
                             status = "✅ مكتمل" if (has_attendance and has_photos and has_report) else "⚠️ ناقص"
                             
-                            with st.expander(f"النشاط والجلسة: {sess['full_path']} - الحالة: {status}"):
+                            with st.expander(f"الجلسة: {sess['full_path']} - الحالة: {status}"):
                                 st.write(f"- ورقة الحضور: {'✅ متوفرة' if has_attendance else '❌ مفقودة'}")
                                 st.write(f"- صور التوثيق: {'✅ متوفرة' if has_photos else '❌ مفقودة'}")
                                 st.write(f"- التقرير: {'✅ متوفر' if has_report else '❌ مفقود'}")
@@ -226,8 +253,8 @@ else:
                         if user_query:
                             st.chat_message("user").write(user_query)
                             
-                            context_text = f"مشروع: {p_name} | الفترة: {selected_month} {selected_year}\n"
-                            context_text += f"إجمالي الجلسات المكتشفة في كل الأنشطة: {len(sessions_data)}\n"
+                            context_text = f"مشروع: {p_name} | المسار الحالي: {current_folder['name']}\n"
+                            context_text += f"إجمالي الجلسات المكتشفة: {len(sessions_data)}\n"
                             context_text += "قائمة الجلسات والملفات المكتشفة:\n"
                             for s in sessions_data:
                                 context_text += f"- المسار: {s['full_path']}\n"
@@ -235,7 +262,7 @@ else:
                                 for f in s['files']:
                                     context_text += f"    * {f['name']}\n"
 
-                            with st.spinner("جاري التحليل القائم على كافة الجلسات والأنشطة..."):
+                            with st.spinner("جاري التحليل القائم على المجلد المختار..."):
                                 try:
                                     if HAS_GEMINI_LIB and "GEMINI_API_KEY" in st.secrets:
                                         prompt = f"""
@@ -257,13 +284,13 @@ else:
                                             all_names.extend([f['name'] for f in s['files']])
 
                                         if "عدد الجلسات" in user_query or "كم جلسة" in user_query:
-                                            ans = f"📌 **عدد الجلسات المكتشفة في كافة الأنشطة لـ ({selected_month} {selected_year}):** هو **{total_sessions}** جلسة/مجلد.\n\n**مسارات الجلسات والأنشطة:**\n"
+                                            ans = f"📌 **عدد الجلسات المكتشفة في هذا المسار ({current_folder['name']}):** هو **{total_sessions}** جلسة/مجلد.\n\n**تفاصيل الجلسات:**\n"
                                             for s in sessions_data:
                                                 ans += f"- {s['full_path']}\n"
                                         elif "انجليز" in user_query or "عرب" in user_query or "تسميات" in user_query:
                                             has_arabic = any(re.search(r'[\u0600-\u06FF]', n) for n in all_names)
                                             has_english = any(re.search(r'[a-zA-Z]', n) for n in all_names)
-                                            ans = f"🔍 **تحليل الأسماء والتسميات في كافة الأنشطة ({len(all_names)} عنصر):**\n\n"
+                                            ans = f"🔍 **تحليل الأسماء والتسميات في هذا المسار ({len(all_names)} عنصر):**\n\n"
                                             if has_english and not has_arabic:
                                                 ans += "• جميع التسميات المكتشفة مكتوبة باللغة **الإنكليزية** فقط."
                                             elif has_arabic and has_english:
@@ -271,7 +298,7 @@ else:
                                             else:
                                                 ans += "• جميع التسميات مكتوبة باللغة **العربية**."
                                         else:
-                                            ans = f"بناءً على قراءة كافة أنشطة وجلسات {selected_month} {selected_year}:\n"
+                                            ans = f"بناءً على قراءة المجلد ({current_folder['name']}):\n"
                                             ans += f"- **إجمالي الجلسات:** {total_sessions}\n"
                                             ans += f"- **إجمالي المستندات المكتشفة:** {len(all_names)}\n"
                                         
