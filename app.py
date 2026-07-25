@@ -14,8 +14,16 @@ st.set_page_config(
 
 CONFIG_FILE = "saved_projects.json"
 
-# تعيين مفتاح الذكاء الاصطناعي مباشرة لضمان عدم ظهور أي خطأ فحص
-gemini_api_key = "AQ.Ab8RN6LSPixEE0F_pMfnUp8nY4kwGd4gCNy9eNV5RXMhPNbcJA"
+# قراءة مفتاح الذكاء الاصطناعي بطريقة آمنة تماماً
+gemini_api_key = None
+try:
+    if "GEMINI_API_KEY" in st.secrets:
+        gemini_api_key = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    pass
+
+if not gemini_api_key:
+    gemini_api_key = os.environ.get("GEMINI_API_KEY", None)
 
 def load_saved_projects():
     if os.path.exists(CONFIG_FILE):
@@ -372,29 +380,33 @@ else:
 
                             with st.chat_message("assistant"):
                                 with st.spinner("جاري معالجة السؤال بواسطة الذكاء الاصطناعي..."):
-                                    ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
+                                    if not gemini_api_key:
+                                        st.error("❌ مفتاح Gemini غير متوفر. تأكد من إضافته في إعدادات Secrets باسم GEMINI_API_KEY.")
+                                    else:
+                                        ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
 
-                                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
-                                    headers = {"Content-Type": "application/json"}
-                                    payload = {
-                                        "contents": [{
-                                            "parts": [{"text": ai_prompt}]
-                                        }]
-                                    }
+                                        # تم التحديث إلى النموذج المدعوم والنشط حالياً
+                                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_api_key}"
+                                        headers = {"Content-Type": "application/json"}
+                                        payload = {
+                                            "contents": [{
+                                                "parts": [{"text": ai_prompt}]
+                                            }]
+                                        }
 
-                                    try:
-                                        res = requests.post(url, json=payload, headers=headers, timeout=30)
-                                        res_json = res.json()
+                                        try:
+                                            res = requests.post(url, json=payload, headers=headers, timeout=30)
+                                            res_json = res.json()
 
-                                        if res.status_code == 200:
-                                            ai_response = res_json['candidates'][0]['content']['parts'][0]['text']
-                                            st.write(ai_response)
-                                            st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
-                                        else:
-                                            err_msg = res_json.get('error', {}).get('message', 'خطأ غير معروف')
-                                            st.error(f"❌ خطأ من Google API ({res.status_code}): {err_msg}")
-                                    except Exception as e:
-                                        st.error(f"❌ فشل الاتصال بالخادم: {e}")
+                                            if res.status_code == 200:
+                                                ai_response = res_json['candidates'][0]['content']['parts'][0]['text']
+                                                st.write(ai_response)
+                                                st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
+                                            else:
+                                                err_msg = res_json.get('error', {}).get('message', 'خطأ غير معروف')
+                                                st.error(f"❌ خطأ من Google API ({res.status_code}): {err_msg}")
+                                        except Exception as e:
+                                            st.error(f"❌ فشل الاتصال بالخادم: {e}")
 
 st.markdown("---")
 st.markdown(
