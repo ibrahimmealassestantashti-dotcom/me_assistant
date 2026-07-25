@@ -13,7 +13,17 @@ st.set_page_config(
 )
 
 CONFIG_FILE = "saved_projects.json"
-gemini_api_key = st.secrets.get("GEMINI_API_KEY", None)
+
+# قراءة مفتاح الذكاء الاصطناعي بأمان من Streamlit Secrets أو المتغيرات البيئية
+gemini_api_key = None
+try:
+    if "GEMINI_API_KEY" in st.secrets:
+        gemini_api_key = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    pass
+
+if not gemini_api_key:
+    gemini_api_key = os.environ.get("GEMINI_API_KEY", None)
 
 def load_saved_projects():
     if os.path.exists(CONFIG_FILE):
@@ -71,7 +81,12 @@ def get_folder_contents(service, folder_id):
 
 def is_sub_component(folder_name):
     name = folder_name.lower().strip()
-    keywords = ["attendance", "حضور", "doc", "صور", "توثيق", "report", "تقرير"]
+    # تضمين documentation وكل الكلمات الشائعة الأخرى بدقة
+    keywords = [
+        "attendance", "attend", "حضور", "كشف", "اسماء", "أسماء",
+        "documentation", "doc", "photo", "photos", "image", "images", "صور", "توثيق", "أرشيف",
+        "report", "reports", "تقرير", "تقارير", "ملخص"
+    ]
     return any(kw in name for kw in keywords)
 
 def parse_session_subfolders(service, session_folder):
@@ -90,13 +105,18 @@ def parse_session_subfolders(service, session_folder):
         sf_name_lower = sf["name"].lower().strip()
         _, files = get_folder_contents(service, sf["id"])
         
-        if "attendance" in sf_name_lower or "حضور" in sf_name_lower:
+        # 1️⃣ مطابقة الحضور
+        if any(k in sf_name_lower for k in ["attendance", "attend", "حضور", "كشف", "اسماء", "أسماء"]):
             session_data["attendance"]["folder"] = sf
             session_data["attendance"]["files"] = files
-        elif "doc" in sf_name_lower or "صور" in sf_name_lower or "توثيق" in sf_name_lower:
+            
+        # 2️⃣ مطابقة التوثيق والـ documentation والصور
+        elif any(k in sf_name_lower for k in ["documentation", "doc", "photo", "photos", "image", "images", "صور", "توثيق", "أرشيف"]):
             session_data["documentation"]["folder"] = sf
             session_data["documentation"]["files"] = files
-        elif "report" in sf_name_lower or "تقرير" in sf_name_lower:
+            
+        # 3️⃣ مطابقة التقارير
+        elif any(k in sf_name_lower for k in ["report", "reports", "تقرير", "تقارير", "ملخص"]):
             session_data["report"]["folder"] = sf
             session_data["report"]["files"] = files
             
@@ -282,7 +302,7 @@ else:
                                     st.write("**📄 ورقة الحضور:**")
                                     for f in att_files: st.caption(f"• {f['name']}")
                                 with col_f2:
-                                    st.write("**🖼️ صور التوثيق:**")
+                                    st.write("**🖼️ صور التوثيق (Documentation):**")
                                     for f in doc_files: st.caption(f"• {f['name']}")
                                 with col_f3:
                                     st.write("**📑 التقرير:**")
@@ -358,7 +378,7 @@ else:
                             with st.chat_message("assistant"):
                                 with st.spinner("جاري معالجة السؤال بواسطة الذكاء الاصطناعي..."):
                                     if not gemini_api_key:
-                                        st.error("❌ المفتاح GEMINI_API_KEY غير موجود في Streamlit Secrets.")
+                                        st.error("❌ المفتاح GEMINI_API_KEY غير موجود. يرجى إضافته في Streamlit Secrets.")
                                     else:
                                         ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
 
