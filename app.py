@@ -1,7 +1,6 @@
 import streamlit as st
 import json
 import os
-import re
 import requests
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -134,7 +133,7 @@ def fetch_structured_sessions(service, target_folder_id):
     return sessions_list
 
 def call_gemini_api(prompt, api_key):
-    """دالة الاتصال الحديثة باستخدام مكتبة google-genai الرسمية ونموذج gemini-2.5-flash الصحيح"""
+    """دالة الاتصال الحديثة باستخدام مكتبة google-genai ونموذج gemini-2.5-flash الصحيح"""
     try:
         client = genai.Client(api_key=api_key.strip())
         response = client.models.generate_content(
@@ -184,4 +183,4 @@ def extract_session_metrics_with_ai(session_info, api_key):
         res = call_gemini_api(prompt, api_key)
         if res.status_code == 200:
             text_res = res.json()['candidates'][0]['content']['parts'][0]['text']
-            cleaned = re.sub(r'```json|
+            cleaned = text_res.replace("```json", "").replace("
