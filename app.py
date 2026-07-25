@@ -134,15 +134,15 @@ def fetch_structured_sessions(service, target_folder_id):
     return sessions_list
 
 def call_gemini_api(prompt, api_key):
-    """دالة اتصال باستخدام نموذج gemini-2.0-flash المدعوم رسمياً مع إعادة المحاولة"""
-    max_retries = 3
-    delay = 3
+    """دالة اتصال باستخدام نموذج gemini-2.5-flash النشط في الحساب"""
+    max_retries = 2
+    delay = 5
     
     for attempt in range(max_retries):
         try:
             client = genai.Client(api_key=api_key.strip())
             response = client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-2.5-flash",
                 contents=prompt,
             )
             class MockResponse:
@@ -161,8 +161,7 @@ def call_gemini_api(prompt, api_key):
             err_str = str(e)
             if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
                 if attempt < max_retries - 1:
-                    sleep_time = delay * (2 ** attempt) + random.uniform(0.5, 1.5)
-                    time.sleep(sleep_time)
+                    time.sleep(delay)
                     continue
                 else:
                     class MockErrorResponse:
@@ -189,25 +188,28 @@ def extract_session_metrics_with_ai(session_info, api_key):
     att_names = [f["name"] for f in att_files]
     rep_names = [f["name"] for f in rep_files]
     
+    default_att = ["--/--/--", "0", "0", "0", "0", "0", "0"]
+    default_rep = ["--/--/--", "0", "0", "0", "0", "0", "0"]
+    default_diff = ["✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
+
+    if not api_key:
+        session_info["cached_metrics"] = (default_att, default_rep, default_diff)
+        return session_info["cached_metrics"]
+
     prompt = f"""
-    أنت مدقق بيانات مشاريع. بناءً على أسماء ملفات الحضور وملفات التقارير التالية لجلسة "{session_info.get('session_name')}", قم بتقدير أو استخراج القيم الحقيقية بدقة على شكل صيغة JSON فقط تتضمن مفاتيح محددة:
+    أنت مدقق بيانات مشاريع. استخرج القيم الحقيقية بدقة بناءً على أسماء الملفات لجلسة "{session_info.get('session_name')}" على شكل JSON فقط:
     - attendance_data: [التاريخ، الإجمالي، رجال، نساء، أطفال ذكور، فتيات، ذوي احتياجات]
     - report_data: [التاريخ، الإجمالي، رجال، نساء، أطفال ذكور، فتيات، ذوي احتياجات]
     - differences: [قائمة تقييم لكل بند مطابقة أو خطأ]
 
     أسماء ملفات الحضور: {att_names}
     أسماء ملفات التقارير: {rep_names}
-    
-    أجب بصيغة JSON صارمة فقط دون أي نصوص إضافية، تحتوي على المصفوفات السابقة بالترتيب.
+    أجب بصيغة JSON صارمة فقط دون أي نصوص إضافية.
     """
-    
-    default_att = ["--/--/--", "0", "0", "0", "0", "0", "0"]
-    default_rep = ["--/--/--", "0", "0", "0", "0", "0", "0"]
-    default_diff = ["✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
 
     try:
         res = call_gemini_api(prompt, api_key)
-        time.sleep(1.2)
+        time.sleep(2.0)
         
         if res.status_code == 200:
             text_res = res.json()['candidates'][0]['content']['parts'][0]['text']
@@ -218,19 +220,21 @@ def extract_session_metrics_with_ai(session_info, api_key):
                 data.get("report_data", default_rep), 
                 data.get("differences", default_diff)
             )
-        elif res.status_code == 429:
-            st.warning("⚠️ تم بلوغ الحد الأقصى المؤقت لطلبات الخطة المجانية. تم استخدام القيم التلقائية بانتظار تجدد الحصة.")
-            session_info["cached_metrics"] = (default_att, default_rep, default_diff)
         else:
             session_info["cached_metrics"] = (default_att, default_rep, default_diff)
-    except Exception as e:
+    except Exception:
         session_info["cached_metrics"] = (default_att, default_rep, default_diff)
         
     return session_info["cached_metrics"]
 
 def has_session_mismatch(session_info, api_key):
+    if "cached_mismatch" in session_info:
+        return session_info["cached_mismatch"]
+    
     _, _, diff_vals = extract_session_metrics_with_ai(session_info, api_key)
-    return any("⚠️" in d or "خطأ" in d for d in diff_vals)
+    res = any("⚠️" in d or "خطأ" in d for d in diff_vals)
+    session_info["cached_mismatch"] = res
+    return res
 
 # --- الواجهة الرئيسية ---
 st.title("📊 نظام إدارة ومتابعة المشاريع الذكي (ME Assistant)")
@@ -273,7 +277,7 @@ with st.sidebar:
 service = get_drive_service()
 
 if not GEMINI_API_KEY:
-    st.warning("⚠️ الرجاء إدخال مفتاح الذكاء الاصطناعي في الشريط الجانبي من فضلك لكي يعمل التحليل والدردشة الذكية.")
+    st.warning("⚠️ الرجاء إدخال مفتاح الذكاء الاصطناعي في الشريط الجانبي لتفعيل التحليل والدردشة الذكية.")
 
 if not st.session_state.projects:
     st.info("👈 قم بإضافة أول مشروع من الشريط الجانبي وسيبقى محفوظاً دائماً.")
@@ -296,7 +300,7 @@ else:
             trail_str = " ➡️ ".join([node["name"] for node in current_trail])
             st.info(f"📍 **المسار الحالي:** {trail_str}")
             
-            col_nav1, col_nav2 = st.columns([1, 4])
+            col_nav1, _ = st.columns([1, 4])
             with col_nav1:
                 if len(current_trail) > 1:
                     if st.button("⬅️ العودة للمجلد السابق", key=f"back_{p_name}"):
@@ -362,11 +366,7 @@ else:
                             rep_files = sess.get("report", {}).get("files", [])
                             
                             is_complete = len(att_files) > 0 and len(doc_files) > 0 and len(rep_files) > 0
-                            has_error = has_session_mismatch(sess, GEMINI_API_KEY) if GEMINI_API_KEY else False
-                            
                             status_tag = "✅ مكتملة" if is_complete else "⚠️ ناقصة"
-                            if has_error:
-                                status_tag += " | ⚠️ تنبيه: يوجد خطأ مطابقه"
 
                             sess_title = sess.get("session_name", "جلسة بدون عنوان")
                             
@@ -389,9 +389,6 @@ else:
                         else:
                             for sess in sessions_data:
                                 sess_title = sess.get("session_name", "جلسة")
-                                has_error = has_session_mismatch(sess, GEMINI_API_KEY)
-                                title_prefix = "⚠️ [يوجد خطأ مطابقة] " if has_error else ""
-                                
                                 att_vals, rep_vals, diff_vals = extract_session_metrics_with_ai(sess, GEMINI_API_KEY)
                                 comparison_data = {
                                     "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
@@ -399,17 +396,21 @@ else:
                                     "التقرير": rep_vals,
                                     "النتيجة / الفروقات": diff_vals
                                 }
-                                with st.expander(f"🔍 {title_prefix}**جلسة: {sess_title}**"):
+                                with st.expander(f"🔍 **جلسة: {sess_title}**"):
                                     st.table(comparison_data)
 
                     elif current_view == "stats":
                         st.markdown("#### 📊 الإحصائية التجميعية للمستفيدين عبر كافة الجلسات:")
+                        tot_boys, tot_girls, tot_pwd = 0, 0, 0
                         if GEMINI_API_KEY:
-                            tot_boys = sum(int(extract_session_metrics_with_ai(s, GEMINI_API_KEY)[0][4]) for s in sessions_data)
-                            tot_girls = sum(int(extract_session_metrics_with_ai(s, GEMINI_API_KEY)[0][5]) for s in sessions_data)
-                            tot_pwd = sum(int(extract_session_metrics_with_ai(s, GEMINI_API_KEY)[0][6]) for s in sessions_data)
-                        else:
-                            tot_boys, tot_girls, tot_pwd = 0, 0, 0
+                            for s in sessions_data:
+                                att_v, _, _ = extract_session_metrics_with_ai(s, GEMINI_API_KEY)
+                                try:
+                                    tot_boys += int(att_v[4])
+                                    tot_girls += int(att_v[5])
+                                    tot_pwd += int(att_v[6])
+                                except:
+                                    pass
                             
                         col_stat1, col_stat2, col_stat3, col_stat4, col_stat5 = st.columns(5)
                         col_stat1.metric("👨 رجال", "0")
@@ -441,38 +442,22 @@ else:
                                 context_text = f"مشروع: {p_name} | المجلد: {current_folder['name']}\n"
                                 context_text += f"عدد الجلسات الإجمالي: {len(sessions_data)}\n\n"
                                 
-                                tot_pwd_all, tot_boys_all, tot_girls_all = 0, 0, 0
                                 for s in sessions_data:
                                     s_title = s.get('session_name', '')
                                     att_v, rep_v, _ = extract_session_metrics_with_ai(s, GEMINI_API_KEY)
-                                    tot_pwd_all += int(att_v[6])
-                                    tot_boys_all += int(att_v[4])
-                                    tot_girls_all += int(att_v[5])
                                     context_text += f"- {s_title}:\n"
-                                    context_text += f"  * التواريخ: حضور ({att_v[0]})، تقرير ({rep_v[0]})\n"
                                     context_text += f"  * المجموع: حضور ({att_v[1]})، تقرير ({rep_v[1]})\n"
-                                    context_text += f"  * التفاصيل: أولاد ({att_v[4]})، فتيات ({att_v[5]})، ذوي احتياجات ({att_v[6]})\n"
-
-                                context_text += f"\nالإجمالي الكلي:\n- ذوي الاحتياجات (PWD): {tot_pwd_all}\n- الأولاد: {tot_boys_all}\n- الفتيات: {tot_girls_all}\n"
 
                                 with st.chat_message("assistant"):
                                     with st.spinner("جاري معالجة السؤال بواسطة الذكاء الاصطناعي..."):
-                                        try:
-                                            ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
-                                            
-                                            res = call_gemini_api(ai_prompt, GEMINI_API_KEY)
-                                            res_json = res.json()
-
-                                            if res.status_code == 200:
-                                                ai_response = res_json['candidates'][0]['content']['parts'][0]['text']
-                                                st.write(ai_response)
-                                                st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
-                                            else:
-                                                err_msg = res_json.get('error', {}).get('message', 'خطأ غير معروف')
-                                                st.error(f"❌ خطأ من Google API: {err_msg}")
-                                                
-                                        except Exception as e:
-                                            st.error(f"❌ فشل الاتصال بالخادم: {e}")
+                                        ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nأجب باللغة العربية بناءً على البيانات:\n{context_text}\nسؤال المستخدم: {prompt_text}"
+                                        res = call_gemini_api(ai_prompt, GEMINI_API_KEY)
+                                        if res.status_code == 200:
+                                            ai_response = res.json()['candidates'][0]['content']['parts'][0]['text']
+                                            st.write(ai_response)
+                                            st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
+                                        else:
+                                            st.error("⚠️ تم بلوغ الحد الأقصى المؤقت للطلبات (429). الرجاء الانتظار قليلاً ثم إعادة المحاولة.")
 
 st.markdown("---")
 st.markdown(
