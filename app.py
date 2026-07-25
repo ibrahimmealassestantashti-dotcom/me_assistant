@@ -223,12 +223,13 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         for uf in uploaded_gemini_files:
             prompt.append(uf)
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
+        # التحديث إلى Interactions API ونموذج gemini-3.5-flash
+        interaction = client.interactions.create(
+            model="gemini-3.5-flash",
+            input=prompt,
         )
         
-        text_res = response.text
+        text_res = interaction.output_text
         cleaned = text_res.replace("```json", "").replace("```", "").strip()
         data = json.loads(cleaned)
         
@@ -242,9 +243,9 @@ def analyze_session_files_with_ai(service, session_info, api_key):
 
     except ClientError as ce:
         err_tuple = (
-            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
-            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
-            [f"❌ ClientError ({ce.code}): تأكد من الرصيد أو مفتاح API", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
+            ["❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام"],
+            ["❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام", "❌ خطأ حد الاستخدام"],
+            [f"❌ تجاوز حد الخطة المجانية (Code {ce.code}): انتظر قليلاً", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
         )
         session_info["cached_metrics"] = err_tuple
         return err_tuple
@@ -493,15 +494,16 @@ else:
                                         
                                         try:
                                             client = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                            res = client.models.generate_content(
-                                                model="gemini-2.5-flash",
-                                                contents=ai_prompt,
+                                            # التحديث إلى Interactions API للدردشة
+                                            interaction = client.interactions.create(
+                                                model="gemini-3.5-flash",
+                                                input=ai_prompt,
                                             )
-                                            ai_response = res.text
+                                            ai_response = interaction.output_text
                                             st.write(ai_response)
                                             st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
                                         except ClientError as ce:
-                                            st.error(f"❌ حدث خطأ من Google API (كود الاستجابة: {ce.code}): يرجى التحقق من مفتاح الـ API أو رصيد الاستخدام.")
+                                            st.error(f"❌ خطأ حد الاستخدام في الخطة المجانية (كود {ce.code}): يرجى الانتظار دقيقة ثم إعادة المحاولة.")
                                         except Exception as e:
                                             st.error(f"❌ حدث خطأ غير متوقع: {e}")
 
