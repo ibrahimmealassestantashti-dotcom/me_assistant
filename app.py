@@ -132,8 +132,23 @@ def fetch_structured_sessions(service, target_folder_id):
                     
     return sessions_list
 
+def call_gemini_api(prompt, api_key):
+    """دالة موحدة للتعامل الذكي مع مفاتيح API أو رموز المصادقة (Bearer / API Key)"""
+    api_key = api_key.strip()
+    if api_key.startswith("AIzaSy"):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        headers = {"Content-Type": "application/json"}
+    else:
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+    
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    return requests.post(url, json=payload, headers=headers, timeout=30)
+
 def extract_session_metrics_with_ai(session_info, api_key):
-    """استخدام الذكاء الاصطناعي لتحليل أسماء ومحتويات الملفات واستخراج القيم الحقيقية"""
     att_files = session_info.get("attendance", {}).get("files", [])
     rep_files = session_info.get("report", {}).get("files", [])
     
@@ -153,18 +168,14 @@ def extract_session_metrics_with_ai(session_info, api_key):
     """
     
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-        headers = {"Content-Type": "application/json"}
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        
-        res = requests.post(url, json=payload, headers=headers, timeout=20)
+        res = call_gemini_api(prompt, api_key)
         if res.status_code == 200:
             text_res = res.json()['candidates'][0]['content']['parts'][0]['text']
             cleaned = re.sub(r'```json|```', '', text_res).strip()
             data = json.loads(cleaned)
             return data["attendance_data"], data["report_data"], data["differences"]
         else:
-            st.error(f"خطأ في الاتصال بـ Gemini API: {res.text}")
+            st.error(f"خطأ في الاتصال بـ Gemini API ({res.status_code}): {res.text}")
     except Exception as e:
         st.error(f"خطأ استثناء: {e}")
         
@@ -184,9 +195,8 @@ if "projects" not in st.session_state:
 with st.sidebar:
     st.header("⚙️ إعدادات النظام والمشاريع")
     
-    # حقل إدخال مفتاح الذكاء الاصطناعي بشكل آمن
     default_api_key = st.secrets.get("GEMINI_API_KEY", "")
-    GEMINI_API_KEY = st.text_input("مفتاح Gemini API (مفتاح الذكاء الاصطناعي):", value=default_api_key, type="password")
+    GEMINI_API_KEY = st.text_input("مفتاح Gemini API أو رمز المصادقة:", value=default_api_key, type="password")
     
     st.markdown("---")
     st.subheader("إضافة مشروع جديد")
@@ -216,7 +226,7 @@ with st.sidebar:
 service = get_drive_service()
 
 if not GEMINI_API_KEY:
-    st.warning("⚠️ الرجاء إدخال مفتاح Gemini API الصحيح في الشريط الجانبي من فضلك لكي يعمل التحليل والدردشة الذكية.")
+    st.warning("⚠️ الرجاء إدخال مفتاح الذكاء الاصطناعي في الشريط الجانبي من فضلك لكي يعمل التحليل والدردشة الذكية.")
 
 if not st.session_state.projects:
     st.info("👈 قم بإضافة أول مشروع من الشريط الجانبي وسيبقى محفوظاً دائماً.")
@@ -366,7 +376,7 @@ else:
                         st.subheader("💬 دردشة المساعد الذكي لمراجعة الجلسات")
 
                         if not GEMINI_API_KEY:
-                            st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي لتفعيل المحادثة.")
+                            st.error("يرجى إدخال مفتاح الذكاء الاصطناعي في الشريط الجانبي لتفعيل المحادثة.")
                         else:
                             chat_history_key = f"messages_{p_name}"
                             if chat_history_key not in st.session_state:
@@ -401,17 +411,9 @@ else:
                                 with st.chat_message("assistant"):
                                     with st.spinner("جاري معالجة السؤال بواسطة الذكاء الاصطناعي..."):
                                         try:
-                                            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-                                            headers = {"Content-Type": "application/json"}
                                             ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
                                             
-                                            payload = {
-                                                "contents": [{
-                                                    "parts": [{"text": ai_prompt}]
-                                                }]
-                                            }
-
-                                            res = requests.post(url, json=payload, headers=headers, timeout=30)
+                                            res = call_gemini_api(ai_prompt, GEMINI_API_KEY)
                                             res_json = res.json()
 
                                             if res.status_code == 200:
