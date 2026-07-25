@@ -4,6 +4,7 @@ import os
 import re
 import io
 import requests
+import pandas as pd
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -159,11 +160,9 @@ def extract_session_metrics_with_ai(service, session_info):
     att_text_content = ""
     rep_text_content = ""
     
-    # محاولة جلب النصوص أو محتوى ملفات الحضور (PDF) والتقارير (Word)
     for f in att_files:
         content = download_file_content(service, f["id"], f.get("mimeType"))
         if content and "pdf" in f.get("name", "").lower():
-            # إذا كان ملف PDF ممسوح ضوئياً، نعتمد على تحليله أو أسماء الملفات مع محتوى توضيحي
             att_text_content += f"[ملف حضور PDF باسم: {f['name']}] "
         elif content:
             att_text_content += f"[ملف حضور: {f['name']}] "
@@ -171,14 +170,13 @@ def extract_session_metrics_with_ai(service, session_info):
     for f in rep_files:
         content = download_file_content(service, f["id"], f.get("mimeType"))
         if content:
-            # إذا كان ملف وورد (docx)، يمكننا تمرير اسمه على الأقل أو قراءه محتواه
             rep_text_content += f"[ملف تقرير Word باسم: {f['name']}] "
 
     prompt = f"""
     أنت مدقق بيانات مشاريع إنسانية وتنموية خبير في مطابقة المستندات.
     قم بتحليل بيانات الجلسة المعنونة باسم: "{session_info.get('session_name')}".
-    معلومات الحضور المستخرجة من ورقة الحضور (المكتوبة بخط اليد مع استخدام حرف 'م' للحضور و 'غ' للغياب): {att_text_content}
-    معلومات التقرير المكتوب بصيغة Word: {rep_text_content}
+    معلومات الحضور المستخرجة من ورقة الحضور: {att_text_content}
+    معلومات التقرير المكتوب: {rep_text_content}
     
     مطلوب منك إخراج البيانات بصيغة JSON صارمة فقط وتحتوي على المفاتيح التالية:
     - attendance_data: [تاريخ الجلسة، العدد الإجمالي، الرجال (Men)، النساء (Women)، الأولاد (Boys)، الفتيات (Girls)، ذوي الاحتياجات (PWD)]
@@ -196,4 +194,99 @@ def extract_session_metrics_with_ai(service, session_info):
         res = requests.post(url, json=payload, headers=headers, timeout=25)
         if res.status_code == 200:
             text_res = res.json()['candidates'][0]['content']['parts'][0]['text']
-            cleaned = re.sub(r'```json|
+            cleaned = re.sub(r'```json|```', '', text_res).strip()
+            return json.loads(cleaned)
+    except Exception as e:
+        return {"error": str(e)}
+    return None
+
+def main():
+    st.sidebar.title("إعدادات المشروع")
+    
+    saved_projects = load_saved_projects()
+    
+    project_name = st.sidebar.text_input("اسم المشروع الجديد:")
+    folder_url_or_id = st.sidebar.text_input("معرف أو رابط مجلد Google Drive الرئيسي للمشروع:")
+    
+    if st.sidebar.button("حفظ المشروع"):
+        if project_name and folder_url_or_id:
+            folder_id = folder_url_or_id
+            if "folders/" in folder_url_or_id:
+                folder_id = folder_url_or_id.split("folders/")[1].split("?")[0]
+            saved_projects[project_name] = folder_id
+            save_projects(saved_projects)
+            st.sidebar.success(f"تم حفظ المشروع '{project_name}' بنجاح!")
+            
+    current_folder_id = None
+    if saved_projects:
+        selected_project = st.sidebar.selectbox("اختر مشروعاً محفوظاً:", ["-- اختر --"] + list(saved_projects.keys()))
+        if selected_project != "-- اختر --":
+            current_folder_id = saved_projects[selected_project]
+
+    st.header("📋 نظام تحليل ومطابقة بيانات الجلسات والتقارير")
+    
+    if current_folder_id:
+        service = get_drive_service()
+        if service:
+            if st.button("🔄 جلب وتحليل الجلسات من Google Drive"):
+                with st.spinner("جاري الاتصال بـ Google Drive وتحليل هيكل المجلدات والجلسات..."):
+                    sessions = fetch_structured_sessions(service, current_folder_id)
+                    st.session_state["sessions"] = sessions
+                    st.success(f"تم العثور على {len(sessions)} جلسة/نشاط.")
+            
+            if "sessions" in st.session_state and st.session_state["sessions"]:
+                st.subheader("قائمة الجلسات والأنشطة المكتشفة")
+                for idx, sess in enumerate(st.session_state["sessions"]):
+                    with st.expander(f"📁 جلسة: {sess['session_name']}"):
+                        st.write(f"**معرف المجلد:** {sess['session_id']}")
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.markdown("**📁 ملفات الحضور:**")
+                            att_files = sess.get("attendance", {}).get("files", [])
+                            if att_files:
+                                for f in att_files:
+                                    st.text(f"- {f['name']}")
+                            else:
+                                st.text("لا توجد ملفات حضور")
+                        with col2:
+                            st.markdown("**📁 ملفات التوثيق/الصور:**")
+                            doc_files = sess.get("documentation", {}).get("files", [])
+                            if doc_files:
+                                for f in doc_files:
+                                    st.text(f"- {f['name']}")
+                            else:
+                                st.text("لا توجد ملفات توثيق")
+                        with col3:
+                            st.markdown("**📁 تقارير الجلسة:**")
+                            rep_files = sess.get("report", {}).get("files", [])
+                            if rep_files:
+                                for f in rep_files:
+                                    st.text(f"- {f['name']}")
+                            else:
+                                st.text("لا توجد تقارير")
+                                
+                        if st.button(f"🤖 تحليل ومطابقة بيانات الجلسة بواسطة الذكاء الاصطناعي", key=f"ai_btn_{idx}"):
+                            with st.spinner("جاري قراءة ومقارنة المستندات عبر نموذج Gemini..."):
+                                analysis_result = extract_session_metrics_with_ai(service, sess)
+                                if analysis_result and "error" not in analysis_result:
+                                    st.success("تم التحليل والمطابقة بنجاح!")
+                                    
+                                    att_data = analysis_result.get("attendance_data", [])
+                                    rep_data = analysis_result.get("report_data", [])
+                                    diffs = analysis_result.get("differences", [])
+                                    
+                                    comparison_df = pd.DataFrame({
+                                        "المؤشر / البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
+                                        "بيانات الحضور (الفعلية)": att_data + [""] * (7 - len(att_data)),
+                                        "بيانات التقرير (المكتوبة)": rep_data + [""] * (7 - len(rep_data)),
+                                        "نتيجة المطابقة": diffs + [""] * (7 - len(diffs))
+                                    })
+                                    st.table(comparison_df)
+                                else:
+                                    st.error(f"حدث خطأ أثناء التحليل: {analysis_result.get('error', 'خطأ غير معروف')}")
+    else:
+        st.info("الرجاء إدخال اسم المشروع ومعرف مجلد Google Drive الرئيسي من القائمة الجانبية للبدء.")
+
+if __name__ == "__main__":
+    main()
