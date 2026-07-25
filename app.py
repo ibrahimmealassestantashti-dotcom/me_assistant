@@ -8,6 +8,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google import genai
+from google.genai.errors import ClientError
 
 st.set_page_config(
     page_title="مساعد إدارة ومتابعة المشاريع - ME Assistant",
@@ -239,11 +240,19 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         session_info["cached_metrics"] = result
         return result
 
+    except ClientError as ce:
+        err_tuple = (
+            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
+            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
+            [f"❌ ClientError ({ce.code}): تأكد من الرصيد أو مفتاح API", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
+        )
+        session_info["cached_metrics"] = err_tuple
+        return err_tuple
     except Exception as e:
         err_tuple = (
             ["❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة"],
             ["❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة"],
-            [f"❌ خطأ اتصال/استهلاك: {str(e)[:35]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
+            [f"❌ خطأ اتصال: {str(e)[:35]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
         )
         session_info["cached_metrics"] = err_tuple
         return err_tuple
@@ -482,15 +491,19 @@ else:
                                     with st.spinner("جاري تحليل ومراجعة محتوى الملفات والإجابة..."):
                                         ai_prompt = f"أنت مساعد ذكي مدقق لمشاريع المتابعة والتقييم.\nأجب باللغة العربية بناءً على محتوى الملفات الحقيقي المستخلص:\n{context_text}\nسؤال المستخدم: {prompt_text}"
                                         
-                                        # تم إصلاح الخطأ بتهيئة العميل هنا بشكل صحيح:
-                                        client = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                        res = client.models.generate_content(
-                                            model="gemini-2.5-flash",
-                                            contents=ai_prompt,
-                                        )
-                                        ai_response = res.text
-                                        st.write(ai_response)
-                                        st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
+                                        try:
+                                            client = genai.Client(api_key=GEMINI_API_KEY.strip())
+                                            res = client.models.generate_content(
+                                                model="gemini-2.5-flash",
+                                                contents=ai_prompt,
+                                            )
+                                            ai_response = res.text
+                                            st.write(ai_response)
+                                            st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
+                                        except ClientError as ce:
+                                            st.error(f"❌ حدث خطأ من Google API (كود الاستجابة: {ce.code}): يرجى التحقق من مفتاح الـ API أو رصيد الاستخدام.")
+                                        except Exception as e:
+                                            st.error(f"❌ حدث خطأ غير متوقع: {e}")
 
 st.markdown("---")
 st.markdown(
