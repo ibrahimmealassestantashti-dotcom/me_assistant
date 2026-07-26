@@ -1,5 +1,7 @@
 streamlit
-google-genai
+pandas
+python-docx
+openai
 google-api-python-client
 google-auth
-openai
+google-genai
