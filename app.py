@@ -196,6 +196,9 @@ def execute_single_ai_call(api_key, files_data):
             else:
                 try:
                     txt = f_bytes.decode("utf-8", errors="ignore")
+                    # تقليص النص لمنع تجاوز حد الـ Tokens الأقصى
+                    if len(txt) > 4000:
+                        txt = txt[:4000] + "\n...(تم اقتطاع جزء من النص لتجنب تجاوز حد الـ Tokens)..."
                     content.append({
                         "type": "text",
                         "text": f"\n--- محتوى ملف ({fname}) ---\n{txt}\n-------------------------\n"
