@@ -117,7 +117,7 @@ def fetch_structured_sessions(service, target_folder_id):
     top_folders, _ = get_folder_contents(service, target_folder_id)
     
     for folder in top_folders:
-        if is_sub_component(folder["name"]):
+        if is_sub_company := is_sub_component(folder["name"]):
             continue
             
         child_folders, _ = get_folder_contents(service, folder["id"])
@@ -169,9 +169,12 @@ def execute_single_ai_call(api_key, files_data):
     
     prompt_instructions = (
         "أنت مدقق ومراجع دقيق لمستندات المشاريع والمخيمات.\n"
-        "قم بقراءة محتوى الملفات المرفقة فعلياً (أوراق الحضور وتقارير الإنجاز) واستخرج القيم الحقيقية بدقة تامة.\n"
-        "تحذير صارم: يمنع منعاً باتاً افتراض أو تخمين أي أرقام أو وضع أصفار إذا كانت البيانات ناقصة أو غير واضحة. إذا وجد نقص أو تعذر القراءة، يجب كتابة عبارات صريحة تدل على الخطأ مثل '❌ خطأ/غير واضح'.\n"
-        "قم بمقارنة أوراق الحضور مع التقرير لكل بند بدقة تامة واكتب نتيجة المقارنة (مثلاً: مطابق، أو وجود فرق محدد).\n"
+        "قم بقراءة محتوى الملفات المرفقة (أوراق الحضور وتقارير الإنجاز) واستخرج القيم الحقيقية بدقة.\n"
+        "مطلوب استخراج البيانات التالية في شكل قوائم من 7 عناصر (التاريخ، الإجمالي، رجال، نساء، أطفال ذكور، فتيات، ذوي احتياجات):\n"
+        "1. attendance_data: بيانات الحضور المستخرجة من ورقة الحضور.\n"
+        "2. report_data: بيانات الحضور المستخرجة من التقرير.\n"
+        "3. differences: مقارنة بين البندين (مثل: مطابق، أو وصف الفرق).\n"
+        "إذا كان أي بند غير موجود أو غير واضح، اكتب 'غير متوفر' بدلاً من اعتبار كل شيء خطأ.\n"
         "أجب بصيغة JSON صارمة فقط بالشكل التالي ودون أي نصوص إضافية:\n"
         "{\n"
         '  "attendance_data": ["التاريخ", "الإجمالي", "رجال", "نساء", "أطفال ذكور", "فتيات", "ذوي احتياجات"],\n'
@@ -180,31 +183,36 @@ def execute_single_ai_call(api_key, files_data):
         "}"
     )
     
+    text_contents = []
+    binary_files = []
+    
+    for f_bytes, mime_type, fname in files_data:
+        if "image" in mime_type or "pdf" in mime_type:
+            binary_files.append((f_bytes, mime_type, fname))
+        else:
+            try:
+                txt = f_bytes.decode("utf-8", errors="ignore")
+                if len(txt) > 8000:
+                    txt = txt[:8000] + "\n...(تم اقتطاع جزء من النص لتجنب الحد الأقصى)...\n"
+                text_contents.append(f"\n--- محتوى ملف ({fname}) ---\n{txt}\n-------------------------\n")
+            except:
+                binary_files.append((f_bytes, mime_type, fname))
+
+    full_prompt = prompt_instructions + "\n" + "".join(text_contents)
+
     if is_openrouter:
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=api_key.strip()
         )
-        content = [{"type": "text", "text": prompt_instructions}]
-        for f_bytes, mime_type, fname in files_data:
+        content = [{"type": "text", "text": full_prompt}]
+        for f_bytes, mime_type, fname in binary_files:
             if "image" in mime_type:
                 b64 = base64.b64encode(f_bytes).decode("utf-8")
                 content.append({
                     "type": "image_url",
                     "image_url": {"url": f"data:{mime_type};base64,{b64}"}
                 })
-            else:
-                try:
-                    txt = f_bytes.decode("utf-8", errors="ignore")
-                    # تقليص النص لمنع تجاوز حد الـ Tokens الأقصى
-                    if len(txt) > 4000:
-                        txt = txt[:4000] + "\n...(تم اقتطاع جزء من النص لتجنب تجاوز حد الـ Tokens)..."
-                    content.append({
-                        "type": "text",
-                        "text": f"\n--- محتوى ملف ({fname}) ---\n{txt}\n-------------------------\n"
-                    })
-                except:
-                    pass
         response = client.chat.completions.create(
             model="google/gemini-2.5-flash",
             messages=[{"role": "user", "content": content}],
@@ -216,8 +224,8 @@ def execute_single_ai_call(api_key, files_data):
         client = genai.Client(api_key=api_key.strip())
         uploaded_gemini_files = []
         try:
-            for f_bytes, mime_type, fname in files_data:
-                suffix = ".pdf" if "pdf" in mime_type else (".png" if "image" in mime_type else ".txt")
+            for f_bytes, mime_type, fname in binary_files:
+                suffix = ".pdf" if "pdf" in mime_type else ".png"
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp.write(f_bytes)
                     tmp_path = tmp.name
@@ -228,7 +236,7 @@ def execute_single_ai_call(api_key, files_data):
                 except:
                     pass
             
-            prompt_parts = [prompt_instructions] + uploaded_gemini_files
+            prompt_parts = [full_prompt] + uploaded_gemini_files
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=prompt_parts,
@@ -242,11 +250,15 @@ def execute_single_ai_call(api_key, files_data):
                     pass
                     
     cleaned = text_res.replace("```json", "").replace("```", "").strip()
+    match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+    if match:
+        cleaned = match.group(0)
+        
     data = json.loads(cleaned)
     return (
-        data.get("attendance_data", []),
-        data.get("report_data", []),
-        data.get("differences", [])
+        data.get("attendance_data", ["غير متوفر"]*7),
+        data.get("report_data", ["غير متوفر"]*7),
+        data.get("differences", ["غير متوفر"]*7)
     )
 
 def analyze_session_files_with_ai(service, session_info, primary_key, backup_key):
@@ -590,7 +602,7 @@ else:
                                                             model="gemini-2.5-flash",
                                                             contents=ai_prompt
                                                         )
-                                                        ai_response = chat_res.text
+                                                        ai_response = client_g.text
                                                     st.write(ai_response)
                                                     st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
                                                 except Exception as ex:
