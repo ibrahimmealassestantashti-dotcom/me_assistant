@@ -205,7 +205,8 @@ def execute_single_ai_call(api_key, files_data):
         response = client.chat.completions.create(
             model="google/gemini-2.5-flash",
             messages=[{"role": "user", "content": content}],
-            temperature=0.0
+            temperature=0.0,
+            max_tokens=4000
         )
         text_res = response.choices[0].message.content
     else:
@@ -554,7 +555,8 @@ else:
                                                 client_or = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=active_key)
                                                 chat_res = client_or.chat.completions.create(
                                                     model="google/gemini-2.5-flash",
-                                                    messages=[{"role": "user", "content": ai_prompt}]
+                                                    messages=[{"role": "user", "content": ai_prompt}],
+                                                    max_tokens=4000
                                                 )
                                                 ai_response = chat_res.choices[0].message.content
                                             else:
@@ -568,7 +570,6 @@ else:
                                             st.write(ai_response)
                                             st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
                                         except Exception as e:
-                                            # محاولة استخدام المفتاح الاحتياطي في الدردشة إذا فشل الأساسي
                                             if BACKUP_API_KEY and BACKUP_API_KEY.strip():
                                                 try:
                                                     backup_active = BACKUP_API_KEY.strip()
@@ -576,7 +577,8 @@ else:
                                                         client_or = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=backup_active)
                                                         chat_res = client_or.chat.completions.create(
                                                             model="google/gemini-2.5-flash",
-                                                            messages=[{"role": "user", "content": ai_prompt}]
+                                                            messages=[{"role": "user", "content": ai_prompt}],
+                                                            max_tokens=4000
                                                         )
                                                         ai_response = chat_res.choices[0].message.content
                                                     else:
