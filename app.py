@@ -5,6 +5,8 @@ import time
 import io
 import tempfile
 import re
+import base64
+from openai import OpenAI
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -162,7 +164,88 @@ def extract_number(text):
     match = re.search(r'\d+', str(text))
     return int(match.group()) if match else 0
 
-def analyze_session_files_with_ai(service, session_info, api_key):
+def execute_single_ai_call(api_key, files_data):
+    is_openrouter = api_key.startswith("sk-or-v1")
+    
+    prompt_instructions = (
+        "أنت مدقق ومراجع دقيق لمستندات المشاريع والمخيمات.\n"
+        "قم بقراءة محتوى الملفات المرفقة فعلياً (أوراق الحضور وتقارير الإنجاز) واستخرج القيم الحقيقية بدقة تامة.\n"
+        "تحذير صارم: يمنع منعاً باتاً افتراض أو تخمين أي أرقام أو وضع أصفار إذا كانت البيانات ناقصة أو غير واضحة. إذا وجد نقص أو تعذر القراءة، يجب كتابة عبارات صريحة تدل على الخطأ مثل '❌ خطأ/غير واضح'.\n"
+        "قم بمقارنة أوراق الحضور مع التقرير لكل بند بدقة تامة واكتب نتيجة المقارنة (مثلاً: مطابق، أو وجود فرق محدد).\n"
+        "أجب بصيغة JSON صارمة فقط بالشكل التالي ودون أي نصوص إضافية:\n"
+        "{\n"
+        '  "attendance_data": ["التاريخ", "الإجمالي", "رجال", "نساء", "أطفال ذكور", "فتيات", "ذوي احتياجات"],\n'
+        '  "report_data": ["التاريخ", "الإجمالي", "رجال", "نساء", "أطفال ذكور", "فتيات", "ذوي احتياجات"],\n'
+        '  "differences": ["النتيجة للبند 1", "النتيجة للبند 2", "النتيجة للبند 3", "النتيجة للبند 4", "النتيجة للبند 5", "النتيجة للبند 6", "النتيجة للبند 7"]\n'
+        "}"
+    )
+    
+    if is_openrouter:
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key.strip()
+        )
+        content = [{"type": "text", "text": prompt_instructions}]
+        for f_bytes, mime_type, fname in files_data:
+            if "image" in mime_type:
+                b64 = base64.b64encode(f_bytes).decode("utf-8")
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime_type};base64,{b64}"}
+                })
+            else:
+                try:
+                    txt = f_bytes.decode("utf-8", errors="ignore")
+                    content.append({
+                        "type": "text",
+                        "text": f"\n--- محتوى ملف ({fname}) ---\n{txt}\n-------------------------\n"
+                    })
+                except:
+                    pass
+        response = client.chat.completions.create(
+            model="google/gemini-2.5-flash",
+            messages=[{"role": "user", "content": content}],
+            temperature=0.0
+        )
+        text_res = response.choices[0].message.content
+    else:
+        client = genai.Client(api_key=api_key.strip())
+        uploaded_gemini_files = []
+        try:
+            for f_bytes, mime_type, fname in files_data:
+                suffix = ".pdf" if "pdf" in mime_type else (".png" if "image" in mime_type else ".txt")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(f_bytes)
+                    tmp_path = tmp.name
+                up_file = client.files.upload(file=tmp_path)
+                uploaded_gemini_files.append(up_file)
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
+            
+            prompt_parts = [prompt_instructions] + uploaded_gemini_files
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt_parts,
+            )
+            text_res = response.text
+        finally:
+            for uf in uploaded_gemini_files:
+                try:
+                    client.files.delete(name=uf.name)
+                except:
+                    pass
+                    
+    cleaned = text_res.replace("```json", "").replace("```", "").strip()
+    data = json.loads(cleaned)
+    return (
+        data.get("attendance_data", []),
+        data.get("report_data", []),
+        data.get("differences", [])
+    )
+
+def analyze_session_files_with_ai(service, session_info, primary_key, backup_key):
     if "cached_metrics" in session_info:
         return session_info["cached_metrics"]
         
@@ -175,102 +258,47 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         ["❌ ملفات الحضور أو التقرير مفقودة", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
     )
 
-    if not api_key or (not att_files and not rep_files):
+    if not att_files and not rep_files:
         session_info["cached_metrics"] = error_result
         return error_result
 
-    client = genai.Client(api_key=api_key.strip())
-    uploaded_gemini_files = []
-    
-    try:
-        for f in att_files:
-            b = get_file_content_bytes(service, f["id"], f["mimeType"])
-            if b:
-                suffix = ".pdf" if "pdf" in f["mimeType"] else (".png" if "image" in f["mimeType"] else ".txt")
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(b)
-                    tmp_path = tmp.name
-                up_file = client.files.upload(file=tmp_path)
-                uploaded_gemini_files.append(up_file)
-                try:
-                    os.unlink(tmp_path)
-                except:
-                    pass
+    files_data = []
+    for f in att_files + rep_files:
+        b = get_file_content_bytes(service, f["id"], f["mimeType"])
+        if b:
+            files_data.append((b, f["mimeType"], f["name"]))
 
-        for f in rep_files:
-            b = get_file_content_bytes(service, f["id"], f["mimeType"])
-            if b:
-                suffix = ".pdf" if "pdf" in f["mimeType"] else (".docx" if "document" in f["mimeType"] else ".txt")
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(b)
-                    tmp_path = tmp.name
-                up_file = client.files.upload(file=tmp_path)
-                uploaded_gemini_files.append(up_file)
-                try:
-                    os.unlink(tmp_path)
-                except:
-                    pass
+    if not files_data:
+        session_info["cached_metrics"] = error_result
+        return error_result
 
-        if not uploaded_gemini_files:
-            session_info["cached_metrics"] = error_result
-            return error_result
+    keys_to_try = []
+    if primary_key and primary_key.strip():
+        keys_to_try.append(primary_key.strip())
+    if backup_key and backup_key.strip():
+        keys_to_try.append(backup_key.strip())
 
-        prompt = [
-            "أنت مدقق ومراجع دقيق لمستندات المشاريع والمخيمات.",
-            "قم بقراءة محتوى الملفات المرفقة فعلياً (أوراق الحضور وتقارير الإنجاز) واستخرج القيم الحقيقية بدقة تامة.",
-            "تحذير صارم: يمنع منعاً باتاً افتراض أو تخمين أي أرقام أو وضع أصفار إذا كانت البيانات ناقصة أو غير واضحة. إذا وجد نقص أو تعذر القراءة، يجب كتابة عبارات صريحة تدل على الخطأ مثل '❌ خطأ/غير واضح'.",
-            "قم بمقارنة أوراق الحضور مع التقرير لكل بند بدقة تامة واكتب نتيجة المقارنة (مثلاً: مطابق، أو وجود فرق محدد).",
-            "أجب بصيغة JSON صارمة فقط بالشكل التالي ودون أي نصوص إضافية:",
-            "{\n"
-            '  "attendance_data": ["التاريخ", "الإجمالي", "رجال", "نساء", "أطفال ذكور", "فتيات", "ذوي احتياجات"],\n'
-            '  "report_data": ["التاريخ", "الإجمالي", "رجال", "نساء", "أطفال ذكور", "فتيات", "ذوي احتياجات"],\n'
-            '  "differences": ["النتيجة للبند 1", "النتيجة للبند 2", "النتيجة للبند 3", "النتيجة للبند 4", "النتيجة للبند 5", "النتيجة للبند 6", "النتيجة للبند 7"]\n'
-            "}"
-        ]
-        for uf in uploaded_gemini_files:
-            prompt.append(uf)
+    if not keys_to_try:
+        session_info["cached_metrics"] = error_result
+        return error_result
 
-        response = client.models.generate_content(
-            model="gemini-3.5-flash",
-            contents=prompt,
-        )
-        
-        text_res = response.text
-        cleaned = text_res.replace("```json", "").replace("```", "").strip()
-        data = json.loads(cleaned)
-        
-        result = (
-            data.get("attendance_data", error_result[0]),
-            data.get("report_data", error_result[1]),
-            data.get("differences", error_result[2])
-        )
-        session_info["cached_metrics"] = result
-        return result
+    last_error = None
+    for k in keys_to_try:
+        try:
+            res = execute_single_ai_call(k, files_data)
+            session_info["cached_metrics"] = res
+            return res
+        except Exception as e:
+            last_error = str(e)
+            continue
 
-    except ClientError as ce:
-        error_msg = f"ClientError ({ce.code}): {str(ce)}"
-        err_tuple = (
-            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
-            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
-            [f"❌ {error_msg[:100]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
-        )
-        session_info["cached_metrics"] = err_tuple
-        return err_tuple
-    except Exception as e:
-        error_msg = str(e)
-        err_tuple = (
-            ["❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة"],
-            ["❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة"],
-            [f"❌ سبب الخطأ: {error_msg[:120]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
-        )
-        session_info["cached_metrics"] = err_tuple
-        return err_tuple
-    finally:
-        for uf in uploaded_gemini_files:
-            try:
-                client.files.delete(name=uf.name)
-            except:
-                pass
+    err_tuple = (
+        ["❌ فشل التحليل", "❌ فشل التحليل", "❌ فشل التحليل", "❌ فشل التحليل", "❌ فشل التحليل", "❌ فشل التحليل", "❌ فشل التحليل"],
+        ["❌ فشل التحليل", "❌ فشل التحليل", "❌ فشل التحليل", "❌ فشل التحليل", "❌ فشل التحليل", "❌ فشل التحليل", "❌ فشل التحليل"],
+        [f"❌ خطأ نهائي: {str(last_error)[:100]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
+    )
+    session_info["cached_metrics"] = err_tuple
+    return err_tuple
 
 # --- الواجهة الرئيسية ---
 st.title("📊 نظام إدارة ومتابعة المشاريع الذكي (ME Assistant)")
@@ -283,7 +311,8 @@ with st.sidebar:
     st.header("⚙️ إعدادات النظام والمشاريع")
     
     default_api_key = st.secrets.get("GEMINI_API_KEY", "")
-    GEMINI_API_KEY = st.text_input("مفتاح Gemini API أو رمز المصادقة:", value=default_api_key, type="password")
+    PRIMARY_API_KEY = st.text_input("🔑 مفتاح API الأساسي (Google أو OpenRouter):", value=default_api_key, type="password")
+    BACKUP_API_KEY = st.text_input("🔄 مفتاح API الاحتياطي (اختياري للتخطي التلقائي):", value="", type="password")
     
     st.markdown("---")
     st.subheader("إضافة مشروع جديد")
@@ -312,8 +341,8 @@ with st.sidebar:
 
 service = get_drive_service()
 
-if not GEMINI_API_KEY:
-    st.warning("⚠️ الرجاء إدخال مفتاح الذكاء الاصطناعي في الشريط الجانبي لتفعيل التحليل وقراءة محتوى الملفات.")
+if not PRIMARY_API_KEY:
+    st.warning("⚠️ الرجاء إدخال مفتاح API واحد على الأقل في الشريط الجانبي لتفعيل التحليل وقراءة محتوى الملفات.")
 
 if not st.session_state.projects:
     st.info("👈 قم بإضافة أول مشروع من الشريط الجانبي وسيبقى محفوظاً دائماً.")
@@ -429,12 +458,12 @@ else:
 
                     elif current_view == "matching":
                         st.markdown("#### ⚖️ مطابقة المحتوى الفعلي لأوراق الحضور مع التقارير:")
-                        if not GEMINI_API_KEY:
-                            st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
+                        if not PRIMARY_API_KEY:
+                            st.error("يرجى إدخال مفتاح API في الشريط الجانبي أولاً.")
                         else:
                             for sess in sessions_data:
                                 sess_title = sess.get("session_name", "جلسة")
-                                att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GEMINI_API_KEY)
+                                att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, PRIMARY_API_KEY, BACKUP_API_KEY)
                                 comparison_data = {
                                     "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
                                     "ورقة الحضور (محتوى الملف)": att_vals,
@@ -447,14 +476,14 @@ else:
                     elif current_view == "stats":
                         st.markdown("#### 📊 إحصائية المستفيدين لكل جلسة على حدة بناءً على محتوى الملفات الحقيقي:")
                         
-                        if not GEMINI_API_KEY:
-                            st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
+                        if not PRIMARY_API_KEY:
+                            st.error("يرجى إدخال مفتاح API في الشريط الجانبي أولاً.")
                         else:
                             tot_men_all, tot_women_all, tot_boys_all, tot_girls_all, tot_pwd_all = 0, 0, 0, 0, 0
                             
                             for s in sessions_data:
                                 sess_title = s.get("session_name", "جلسة بدون عنوان")
-                                att_v, _, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
+                                att_v, _, _ = analyze_session_files_with_ai(service, s, PRIMARY_API_KEY, BACKUP_API_KEY)
                                 
                                 s_men = extract_number(att_v[2])
                                 s_women = extract_number(att_v[3])
@@ -468,7 +497,6 @@ else:
                                 tot_girls_all += s_girls
                                 tot_pwd_all += s_pwd
                                 
-                                # عرض إحصائيات كل جلسة في صندوق خاص بها
                                 with st.expander(f"📌 تفاصيل جلسة: {sess_title}", expanded=True):
                                     c1, c2, c3, c4, c5 = st.columns(5)
                                     c1.metric("👨 رجال", str(s_men))
@@ -490,8 +518,8 @@ else:
                         st.markdown("---")
                         st.subheader("💬 دردشة المساعد الذكي لمراجعة محتوى الجلسات")
 
-                        if not GEMINI_API_KEY:
-                            st.error("يرجى إدخال مفتاح الذكاء الاصطناعي في الشريط الجانبي لتفعيل المحادثة.")
+                        if not PRIMARY_API_KEY:
+                            st.error("يرجى إدخال مفتاح API في الشريط الجانبي لتفعيل المحادثة.")
                         else:
                             chat_history_key = f"messages_{p_name}"
                             if chat_history_key not in st.session_state:
@@ -511,7 +539,7 @@ else:
                                 
                                 for s in sessions_data:
                                     s_title = s.get('session_name', '')
-                                    att_v, rep_v, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
+                                    att_v, rep_v, _ = analyze_session_files_with_ai(service, s, PRIMARY_API_KEY, BACKUP_API_KEY)
                                     context_text += f"- {s_title}:\n"
                                     context_text += f"  * الحضور المستخلص: {att_v}\n"
                                     context_text += f"  * التقرير المستخلص: {rep_v}\n"
@@ -521,18 +549,49 @@ else:
                                         ai_prompt = f"أنت مساعد ذكي مدقق لمشاريع المتابعة والتقييم.\nأجب باللغة العربية بناءً على محتوى الملفات الحقيقي المستخلص:\n{context_text}\nسؤال المستخدم: {prompt_text}"
                                         
                                         try:
-                                            client = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                            interaction = client.interactions.create(
-                                                model="gemini-3.5-flash",
-                                                input=ai_prompt,
-                                            )
-                                            ai_response = interaction.output_text
+                                            active_key = PRIMARY_API_KEY.strip()
+                                            if active_key.startswith("sk-or-v1"):
+                                                client_or = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=active_key)
+                                                chat_res = client_or.chat.completions.create(
+                                                    model="google/gemini-2.5-flash",
+                                                    messages=[{"role": "user", "content": ai_prompt}]
+                                                )
+                                                ai_response = chat_res.choices[0].message.content
+                                            else:
+                                                client_g = genai.Client(api_key=active_key)
+                                                chat_res = client_g.models.generate_content(
+                                                    model="gemini-2.5-flash",
+                                                    contents=ai_prompt
+                                                )
+                                                ai_response = chat_res.text
+                                                
                                             st.write(ai_response)
                                             st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
-                                        except ClientError as ce:
-                                            st.error(f"❌ خطأ حد الاستخدام في الخطة المجانية (كود {ce.code}): يرجى الانتظار دقيقة ثم إعادة المحاولة.")
                                         except Exception as e:
-                                            st.error(f"❌ حدث خطأ غير متوقع: {e}")
+                                            # محاولة استخدام المفتاح الاحتياطي في الدردشة إذا فشل الأساسي
+                                            if BACKUP_API_KEY and BACKUP_API_KEY.strip():
+                                                try:
+                                                    backup_active = BACKUP_API_KEY.strip()
+                                                    if backup_active.startswith("sk-or-v1"):
+                                                        client_or = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=backup_active)
+                                                        chat_res = client_or.chat.completions.create(
+                                                            model="google/gemini-2.5-flash",
+                                                            messages=[{"role": "user", "content": ai_prompt}]
+                                                        )
+                                                        ai_response = chat_res.choices[0].message.content
+                                                    else:
+                                                        client_g = genai.Client(api_key=backup_active)
+                                                        chat_res = client_g.models.generate_content(
+                                                            model="gemini-2.5-flash",
+                                                            contents=ai_prompt
+                                                        )
+                                                        ai_response = chat_res.text
+                                                    st.write(ai_response)
+                                                    st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
+                                                except Exception as ex:
+                                                    st.error(f"❌ خطأ نهائي في الدردشة: {ex}")
+                                            else:
+                                                st.error(f"❌ حدث خطأ: {e}")
 
 st.markdown("---")
 st.markdown(
