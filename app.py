@@ -6,6 +6,8 @@ import io
 import tempfile
 import re
 import base64
+import pandas as pd
+import docx
 from openai import OpenAI
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -159,7 +161,7 @@ def get_file_content_bytes(service, file_id, mime_type):
         return None
 
 def extract_number(text):
-    if not text or "غير متوفر" in str(text) or "❌" in str(text):
+    if not text or "غير متوفر" in str(text) or "❌" in str(text) or "فشل" in str(text):
         return 0
     match = re.search(r'\d+', str(text))
     return int(match.group()) if match else 0
@@ -168,13 +170,16 @@ def execute_single_ai_call(api_key, files_data):
     is_openrouter = api_key.startswith("sk-or-v1")
     
     prompt_instructions = (
-        "أنت مدقق ومراجع دقيق وصارم جداً لمستندات المشاريع والمخيمات.\n"
-        "تعليمات حاسمة وممنوعة تماماً:\n"
-        "1. ممنوع منعاً باتاً تخمين أو اختلاق أي أرقام أو تواريخ غير موجودة صراحةً داخل الملفات.\n"
-        "2. إذا لم تجد الرقم أو القيمة أو التاريخ مكتوباً وواضحاً داخل الملف، يجب عليك كتابة عبارة 'غير متوفر' بدلاً منه تماماً.\n"
-        "مطلوب استخراج البيانات التالية في شكل قوائم من 7 عناصر بالضبط (التاريخ، الإجمالي، رجال، نساء، أطفال ذكور، فتيات، ذوي احتياجات):\n"
-        "- attendance_data: بيانات الحضور المستخرجة حرفياً من ورقة الحضور (اكتب 'غير متوفر' في حال عدم وجودها).\n"
-        "- report_data: بيانات الحضور المستخرجة حرفياً من التقرير (اكتب 'غير متوفر' في حال عدم وجودها).\n"
+        "أنت مدقق ومراجع دقيق وصارم جداً لمستندات المشاريع والمخيمات الإنسانية.\n"
+        "طبيعة المستندات المرفقة:\n"
+        "- أوراق الحضور: عبارة عن ملفات PDF ممسوحة ضوئياً ومكتوبة بخط اليد. دقق النظر فيها جيداً لقراءة الأرقام المكتوبة يدوياً.\n"
+        "- التقارير: ملفات تقارير نصية أو وورد (Word).\n\n"
+        "تعليمات حاسمة وملزمة:\n"
+        "1. ممنوع منعاً باتاً تخمين أو اختلاق أو تقدير أي أرقام أو تواريخ غير موجودة بوضوح وصراحة داخل الملفات.\n"
+        "2. إذا لم تجد الرقم أو القيمة أو التاريخ مكتوباً وصريحاً، أو كان غير مقروء في ورقة الحضور اليدوية، يجب عليك كتابة عبارة 'غير متوفر' حصراً وعدم وضع أي رقم افتراضي.\n"
+        "مطلوب استخراج البيانات التالية بدقة في شكل قوائم من 7 عناصر بالضبط (تاريخ الجلسة، العدد الإجمالي، الرجال، النساء، الأولاد، الفتيات، ذوي الاحتياجات):\n"
+        "- attendance_data: بيانات الحضور المستخرجة حرفياً من ورقة الحضور (PDF بخط اليد).\n"
+        "- report_data: بيانات الحضور المستخرجة حرفياً من التقرير.\n"
         "- differences: مقارنة دقيقة بين البندين أو كتابة 'غير متوفر'.\n"
         "أجب بصيغة JSON صارمة فقط بالشكل التالي ودون أي نصوص إضافية:\n"
         "{\n"
@@ -188,13 +193,34 @@ def execute_single_ai_call(api_key, files_data):
     binary_files = []
     
     for f_bytes, mime_type, fname in files_data:
+        fname_lower = fname.lower()
         if "image" in mime_type or "pdf" in mime_type:
+            # ملفات الصور أو ملفات الـ PDF الممسوحة ضوئياً ترسل كرؤية بصرية للنموذج
             binary_files.append((f_bytes, mime_type, fname))
+        elif 'wordprocessingml.document' in mime_type or fname_lower.endswith('.docx'):
+            try:
+                doc = docx.Document(io.BytesIO(f_bytes))
+                doc_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+                text_contents.append(f"\n--- محتوى ملف الورد ({fname}) ---\n{doc_text}\n-------------------------\n")
+            except Exception:
+                binary_files.append((f_bytes, mime_type, fname))
+        elif "spreadsheet" in mime_type or fname_lower.endswith(('.xlsx', '.xls', '.csv')):
+            try:
+                if fname_lower.endswith('.csv') or 'csv' in mime_type:
+                    df_text = f_bytes.decode('utf-8', errors='ignore')
+                else:
+                    excel_data = pd.read_excel(io.BytesIO(f_bytes), sheet_name=None)
+                    df_text = ""
+                    for s_name, df_sheet in excel_data.items():
+                        df_text += f"\n[ورقة العمل: {s_name}]\n" + df_sheet.to_string() + "\n"
+                text_contents.append(f"\n--- محتوى ملف الجدول ({fname}) ---\n{df_text}\n-------------------------\n")
+            except Exception:
+                binary_files.append((f_bytes, mime_type, fname))
         else:
             try:
                 txt = f_bytes.decode("utf-8", errors="ignore")
-                if len(txt) > 8000:
-                    txt = txt[:8000] + "\n...(تم اقتطاع جزء من النص لتجنب الحد الأقصى)...\n"
+                if len(txt) > 10000:
+                    txt = txt[:10000] + "\n...(تم اقتطاع جزء من النص)...\n"
                 text_contents.append(f"\n--- محتوى ملف ({fname}) ---\n{txt}\n-------------------------\n")
             except:
                 binary_files.append((f_bytes, mime_type, fname))
@@ -208,14 +234,16 @@ def execute_single_ai_call(api_key, files_data):
         )
         content = [{"type": "text", "text": full_prompt}]
         for f_bytes, mime_type, fname in binary_files:
-            if "image" in mime_type:
+            if "image" in mime_type or "pdf" in mime_type:
+                # إذا كان PDF ممسوحاً ضوئياً، Openrouter قد يحتاج معالجة صور أو إرساله كبيانات
                 b64 = base64.b64encode(f_bytes).decode("utf-8")
+                img_mime = mime_type if "image" in mime_type else "application/pdf"
                 content.append({
                     "type": "image_url",
-                    "image_url": {"url": f"data:{mime_type};base64,{b64}"}
+                    "image_url": {"url": f"data:{img_mime};base64,{b64}"}
                 })
         response = client.chat.completions.create(
-            model="google/gemini-2.5-flash",
+            model="google/gemini-2.0-flash-001",
             messages=[{"role": "user", "content": content}],
             temperature=0.0,
             max_tokens=4000
@@ -239,7 +267,7 @@ def execute_single_ai_call(api_key, files_data):
             
             prompt_parts = [full_prompt] + uploaded_gemini_files
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.0-flash",
                 contents=prompt_parts,
             )
             text_res = response.text
@@ -312,7 +340,7 @@ def analyze_session_files_with_ai(service, session_info, primary_key, backup_key
     err_tuple = (
         ["فشل التحليل", "فشل التحليل", "فشل التحليل", "فشل التحليل", "فشل التحليل", "فشل التحليل", "فشل التحليل"],
         ["فشل التحليل", "فشل التحليل", "فشل التحليل", "فشل التحليل", "فشل التحليل", "فشل التحليل", "فشل التحليل"],
-        [f"خطأ نهائي: {str(last_error)[:100]}", "غير متوفر", "غير متوفر", "غير متوفر", "غير متوفر", "غير متوفر", "غير متوفر"]
+        [f"خطأ: {str(last_error)[:80]}", "غير متوفر", "غير متوفر", "غير متوفر", "غير متوفر", "غير متوفر", "غير متوفر"]
     )
     session_info["cached_metrics"] = err_tuple
     return err_tuple
@@ -570,7 +598,7 @@ else:
                                             if active_key.startswith("sk-or-v1"):
                                                 client_or = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=active_key)
                                                 chat_res = client_or.chat.completions.create(
-                                                    model="google/gemini-2.5-flash",
+                                                    model="google/gemini-2.0-flash-001",
                                                     messages=[{"role": "user", "content": ai_prompt}],
                                                     max_tokens=4000
                                                 )
@@ -578,7 +606,7 @@ else:
                                             else:
                                                 client_g = genai.Client(api_key=active_key)
                                                 chat_res = client_g.models.generate_content(
-                                                    model="google/gemini-2.5-flash",
+                                                    model="google/gemini-2.0-flash",
                                                     contents=ai_prompt
                                                 )
                                                 ai_response = chat_res.text
@@ -592,7 +620,7 @@ else:
                                                     if backup_active.startswith("sk-or-v1"):
                                                         client_or = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=backup_active)
                                                         chat_res = client_or.chat.completions.create(
-                                                            model="google/gemini-2.5-flash",
+                                                            model="google/gemini-2.0-flash-001",
                                                             messages=[{"role": "user", "content": ai_prompt}],
                                                             max_tokens=4000
                                                         )
@@ -600,7 +628,7 @@ else:
                                                     else:
                                                         client_g = genai.Client(api_key=backup_active)
                                                         chat_res = client_g.models.generate_content(
-                                                            model="google/gemini-2.5-flash",
+                                                            model="google/gemini-2.0-flash",
                                                             contents=ai_prompt
                                                         )
                                                         ai_response = client_g.text
