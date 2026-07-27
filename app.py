@@ -140,6 +140,7 @@ def fetch_structured_sessions(service, target_folder_id):
         
         if has_sub_components:
             parsed = parse_session_subfolders(service, folder)
+            parsed["session_name"] = f"{folder['name']}"
             sessions_list.append(parsed)
         else:
             for cf in child_folders:
@@ -149,7 +150,8 @@ def fetch_structured_sessions(service, target_folder_id):
                 sub_cf_folders, _ = get_folder_contents(service, cf["id"])
                 if any(is_sub_component(scf["name"]) for scf in sub_cf_folders):
                     parsed = parse_session_subfolders(service, cf)
-                    parsed["session_name"] = f"{folder['name']} / {cf['name']}"
+                    # ترتيب المسار بوضوح: المجلد الفرعي / الجلسة
+                    parsed["session_name"] = f"{folder['name']} ➔ {cf['name']}"
                     sessions_list.append(parsed)
                     
     return sessions_list
@@ -350,7 +352,7 @@ else:
             current_folder = current_trail[-1]
             
             st.subheader(f"📁 متصفح مجلدات مشروع: {p_name}")
-            trail_str = " ➡️ ".join([node["name"] for node in current_trail])
+            trail_str = " ➔ ".join([node["name"] for node in current_trail])
             st.info(f"📍 **المسار الحالي:** {trail_str}")
             
             col_nav1, _ = st.columns([1, 4])
@@ -427,7 +429,7 @@ else:
 
                             sess_title = sess.get("session_name", "جلسة بدون عنوان")
                             
-                            with st.expander(f"📌 **{sess_title}** — الحالة: {status_tag}"):
+                            with st.expander(f"📌 المسار / الجلسة: \u200e{sess_title}\u200f — الحالة: {status_tag}"):
                                 col_f1, col_f2, col_f3 = st.columns(3)
                                 with col_f1:
                                     st.write("**📄 ورقة الحضور:**")
@@ -461,7 +463,6 @@ else:
                                 sess_title = sess.get("session_name", "جلسة")
                                 att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GEMINI_API_KEY)
                                 
-                                # حفظ النتيجة تلقائياً في السجل المحفوظ
                                 all_logs[p_name][sess_title] = {
                                     "attendance": att_vals,
                                     "report": rep_vals,
@@ -475,7 +476,8 @@ else:
                                     "التقرير (محتوى الملف)": rep_vals,
                                     "حالة التدقيق / الفروقات": diff_vals
                                 }
-                                with st.expander(f"🔍 **جلسة: {sess_title}**"):
+                                # استخدام الرموز الاتجاهية \u200e لترتيب المسار وأسماء الجلسات الإنجليزية بشكل سليم
+                                with st.expander(f"🔍 مسار / جلسة: \u200e{sess_title}\u200f"):
                                     st.table(comparison_data)
 
                             save_scan_logs(all_logs)
@@ -489,7 +491,9 @@ else:
                         else:
                             project_logs = all_logs[p_name]
                             for sess_name, log_data in project_logs.items():
-                                with st.expander(f"📌 النشاط / الجلسة: {sess_name} (آخر فحص: {log_data.get('timestamp', 'غير معروف')})"):
+                                # تصحيح عرض المسار والجلسة وسجل التاريخ لضمان عدم تداخل الأحرف
+                                expander_title = f"📌 المسار: \u200e{sess_name}\u200f 🕒 (آخر فحص: \u200e{log_data.get('timestamp', 'غير معروف')}\u200f)"
+                                with st.expander(expander_title):
                                     saved_comp_data = {
                                         "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
                                         "ورقة الحضور": log_data.get("attendance", []),
@@ -518,7 +522,7 @@ else:
                                         rep_files = s.get("report", {}).get("files", [])
                                         att_v, rep_v, diff_v = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
                                         
-                                        gap_context += f"### الجلسة: {s_title}\n"
+                                        gap_context += f"### المسار / الجلسة: {s_title}\n"
                                         gap_context += f"- مرفقات الحضور: {'موجودة (' + str(len(att_files)) + ')' if att_files else 'مفقودة ❌'}\n"
                                         gap_context += f"- صور التوثيق: {'موجودة (' + str(len(doc_files)) + ')' if doc_files else 'مفقودة ⚠️'}\n"
                                         gap_context += f"- التقرير: {'موجود (' + str(len(rep_files)) + ')' if rep_files else 'مفقودة ❌'}\n"
@@ -576,7 +580,7 @@ else:
                                 tot_girls_all += s_girls
                                 tot_pwd_all += s_pwd
                                 
-                                with st.expander(f"📌 تفاصيل جلسة: {sess_title}", expanded=True):
+                                with st.expander(f"📌 المسار / الجلسة: \u200e{sess_title}\u200f", expanded=True):
                                     c1, c2, c3, c4, c5 = st.columns(5)
                                     c1.metric("👨 رجال", str(s_men))
                                     c2.metric("👩 نساء", str(s_women))
