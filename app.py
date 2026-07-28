@@ -178,7 +178,6 @@ def get_file_content_bytes(service, file_id, mime_type):
         fh.seek(0)
         return fh.read()
     except Exception as e:
-        st.error(f"خطأ في تحميل ملف Drive (ID: {file_id}): {e}")
         return None
 
 def extract_number(text):
@@ -187,13 +186,23 @@ def extract_number(text):
     match = re.search(r'\d+', str(text))
     return int(match.group()) if match else 0
 
-def call_gemini_with_retry(client, model, contents, max_retries=3, initial_delay=3):
+def call_gemini_with_retry(client, model, contents, max_retries=4, initial_delay=30):
+    """
+    معالجة قيود الباقة المجانية (429 Rate Limit): 
+    عند استنفاد الحصة، ينتظر التطبيق 30 ثانية تلقائياً ويعاود المحاولة بدلاً من الفشل الفوري.
+    """
     for attempt in range(max_retries):
         try:
             return client.models.generate_content(model=model, contents=contents)
         except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                if attempt < max_retries - 1:
+                    st.warning(f"⏳ تم الوصول لحد الطلبات المجاني (429). جاري الانتظار 30 ثانية لإعادة المحاولة تلقائياً (المحاولة {attempt + 2}/{max_retries})...")
+                    time.sleep(30)
+                    continue
             if attempt < max_retries - 1:
-                time.sleep(initial_delay * (2 ** attempt))
+                time.sleep(initial_delay)
                 continue
             raise e
 
@@ -209,7 +218,6 @@ def analyze_session_files_with_ai(service, session_info, api_key, force_refresh=
         return None
 
     if not att_files and not rep_files:
-        st.warning(f"⚠️ الجلسة '{session_info.get('session_name')}' لا تحتوي على ملفات حضور أو تقارير.")
         empty_res = (
             ["لا توجد ملفات", "-", "-", "-", "-", "-", "-"],
             ["لا توجد ملفات", "-", "-", "-", "-", "-", "-"],
@@ -259,7 +267,7 @@ def analyze_session_files_with_ai(service, session_info, api_key, force_refresh=
             "قم بقراءة محتوى الملفات المرفقة فعلياً (أوراق الحضور وتقارير الإنجاز) واستخرج القيم الحقيقية بدقة تامة.",
             "تحذير صارم: يمنع منعاً باتاً افتراض أو تخمين أي أرقام أو وضع أصفار إذا كانت البيانات ناقصة أو غير واضحة. إذا وجد نقص أو تعذر القراءة، يجب كتابة عبارات صريحة تدل على الخطأ مثل '❌ غير واضح'.",
             "قم بمقارنة أوراق الحضور مع التقرير لكل بند بدقة تامة واكتب نتيجة المقارنة.",
-            "أجب بصيغة JSON صارمة فقط بالشكل التالي ودون أي نصوص إضافية أو علامات تMarkdown خارجية خارج الكود:",
+            "أجب بصيغة JSON صارمة فقط بالشكل التالي ودون أي نصوص إضافية أو علامات تMarkdown خارجية:",
             "{\n"
             '  "attendance_data": ["التاريخ", "الإجمالي", "رجال", "نساء", "أطفال ذكور", "فتيات", "ذوي احتياجات"],\n'
             '  "report_data": ["التاريخ", "الإجمالي", "رجال", "نساء", "أطفال ذكور", "فتيات", "ذوي احتياجات"],\n'
@@ -269,7 +277,6 @@ def analyze_session_files_with_ai(service, session_info, api_key, force_refresh=
         for uf in uploaded_gemini_files:
             prompt.append(uf)
 
-        # استبدال النموذج بنموذج مستقر
         response = call_gemini_with_retry(
             client=client,
             model="gemini-2.5-flash",
@@ -289,7 +296,6 @@ def analyze_session_files_with_ai(service, session_info, api_key, force_refresh=
         return result
 
     except Exception as e:
-        # عرض الخطأ الحقيقي بوضوح على الشاشة لمعرفة سبب الفشل بدقة
         st.error(f"❌ حدث خطأ أثناء تحليل الجلسة '{session_info.get('session_name')}':\n`{str(e)}`")
         err_tuple = (
             ["خطأ بالتحليل", "-", "-", "-", "-", "-", "-"],
@@ -467,7 +473,7 @@ else:
 
                     elif current_view == "matching":
                         st.markdown("#### ⚖️ مطابقة المحتوى الفعلي لأوراق الحضور مع التقارير:")
-                        st.info("💡 اضغط على زر **(🔄 إعادة مطابقة)** بجانب الجلسة التي تريد تحليلها.")
+                        st.info("💡 اضغط على زر **(🔄 إعادة مطابقة)** لكل جلسة على حدة بفاصل زمني بسيط بين الجلسات لتجنب ضغط الباقة المجانية.")
                         
                         if not GEMINI_API_KEY:
                             st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
@@ -557,6 +563,9 @@ else:
                                         gap_context += f"- بيانات الحضور المستخلصة: {att_v}\n"
                                         gap_context += f"- بيانات التقرير المستخلصة: {rep_v}\n"
                                         gap_context += f"- الفروقات وحالة التدقيق: {diff_v}\n\n"
+                                        
+                                        # فاصل زمني لتجنب 429 في الحلقات المتتالية
+                                        time.sleep(12)
 
                                     gap_prompt = (
                                         "أنت خبير محترف في المتابعة والتقييم (M&E) لمشاريع الإغاثة والتنمية.\n"
