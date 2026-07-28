@@ -241,7 +241,7 @@ def analyze_session_files_with_ai(service, session_info, api_key):
 
         prompt = [
             "أنت مدقق ومراجع دقيق لمستندات المشاريع والمخيمات.",
-            "قم بقراءة محتوى الملفات المرفقة فعلياً (أوراق الحضور وتقارير الإنجاز) واستخرج القيم الحقيقية بدقة تامة.",
+            "قم بالتركيز المباشر على الجداول أو الأقسام المحددة التي تحتوي على (التاريخ) و(أعداد المستفيدين: الإجمالي، رجال، نساء، أطفال ذكور، فتيات، ذوي الاحتياجات) دون الحاجة لقراءة الملف بالكامل.",
             "تحذير صارم: يمنع منعاً باتاً افتراض أو تخمين أي أرقام أو وضع أصفار إذا كانت البيانات ناقصة أو غير واضحة. إذا وجد نقص أو تعذر القراءة، يجب كتابة عبارات صريحة تدل على الخطأ مثل '❌ خطأ/غير واضح'.",
             "قم بمقارنة أوراق الحضور مع التقرير لكل بند بدقة تامة واكتب نتيجة المقارنة (مثلاً: مطابق، أو وجود فرق محدد).",
             "أجب بصيغة JSON صارمة فقط بالشكل التالي ودون أي نصوص إضافية:",
@@ -385,13 +385,13 @@ else:
             st.markdown("---")
             
             btn_fetch = st.button(
-                f"⚡ جلب وتحليل محتوى ملفات الجلسات تحت ({current_folder['name']})", 
+                f"⚡ جلب هيكلية الجلسات تحت ({current_folder['name']})", 
                 key=f"fetch_btn_{p_name}",
                 type="primary"
             )
 
             if btn_fetch:
-                with st.spinner("جاري تحديد مجلدات الجلسات واستخراج وقراءة محتوى الملفات الفعلية..."):
+                with st.spinner("جاري تحديد مجلدات الجلسات..."):
                     base_path_str = " ➔ ".join([node["name"] for node in current_trail])
                     sessions = fetch_structured_sessions(service, current_folder["id"], base_path_str)
                     st.session_state[f"data_{p_name}"] = sessions
@@ -457,7 +457,7 @@ else:
                                         st.error("❌ التقرير مفقود")
 
                     elif current_view == "matching":
-                        st.markdown("#### ⚖️ مطابقة المحتوى الفعلي لأوراق الحضور مع التقارير:")
+                        st.markdown("#### ⚖️ مطابقة المحتوى الفعلي لأوراق الحضور مع التقارير (لكل جلسة حسب الطلب):")
                         if not GEMINI_API_KEY:
                             st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
                         else:
@@ -465,37 +465,61 @@ else:
                             if p_name not in all_logs:
                                 all_logs[p_name] = {}
 
-                            for sess in sessions_data:
-                                sess_title = sess.get("session_name", "جلسة")
-                                att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GEMINI_API_KEY)
-                                
-                                all_logs[p_name][sess_title] = {
-                                    "attendance": att_vals,
-                                    "report": rep_vals,
-                                    "differences": diff_vals,
-                                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-                                }
-
-                                comparison_data = {
-                                    "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
-                                    "ورقة الحضور (محتوى الملف)": att_vals,
-                                    "التقرير (محتوى الملف)": rep_vals,
-                                    "حالة التدقيق / الفروقات": diff_vals
-                                }
-                                with st.expander(f"🔍 المسار الكامل: \u200e{sess_title}\u200f"):
-                                    st.table(comparison_data)
-
-                            save_scan_logs(all_logs)
-                            st.success("💾 تم حفظ نتائج المطابقة والفحص في 'سجل الفحص' بنجاح!")
+                            for i, sess in enumerate(sessions_data):
+                                sess_title = sess.get("session_name", f"جلسة {i+1}")
+                                with st.expander(f"📌 المسار الكامل: \u200e{sess_title}\u200f"):
+                                    saved_data = all_logs[p_name].get(sess_title, None)
+                                    if saved_data:
+                                        st.success("✅ توجد نتيجة مطابقة محفوظة مسبقاً لهذه الجلسة.")
+                                        comparison_data = {
+                                            "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
+                                            "ورقة الحضور (محتوى الملف)": saved_data.get("attendance", []),
+                                            "التقرير (محتوى الملف)": saved_data.get("report", []),
+                                            "حالة التدقيق / الفروقات": saved_data.get("differences", [])
+                                        }
+                                        st.table(comparison_data)
+                                        
+                                        col_m1, col_m2 = st.columns(2)
+                                        if col_m1.button("🔄 إعادة مطابقة هذه الجلسة", key=f"re_match_{p_name}_{i}"):
+                                            with st.spinner("جاري إعادة مطابقة ملفات الجلسة..."):
+                                                att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GEMINI_API_KEY)
+                                                all_logs[p_name][sess_title] = {
+                                                    "attendance": att_vals,
+                                                    "report": rep_vals,
+                                                    "differences": diff_vals,
+                                                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                                                }
+                                                save_scan_logs(all_logs)
+                                                st.success("تم تحديث المطابقة بنجاح!")
+                                                st.rerun()
+                                        if col_m2.button("🗑️ حذف سجل هذه الجلسة", key=f"del_match_log_{p_name}_{i}"):
+                                            if sess_title in all_logs[p_name]:
+                                                del all_logs[p_name][sess_title]
+                                                save_scan_logs(all_logs)
+                                                st.success("تم حذف سجل هذه الجلسة بنجاح!")
+                                                st.rerun()
+                                    else:
+                                        if st.button("⚡ تنفيذ المطابقة لهذه الجلسة فقط", key=f"do_match_{p_name}_{i}", type="primary"):
+                                            with st.spinner("جاري قراءة وتحليل ملفات الجلسة..."):
+                                                att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GEMINI_API_KEY)
+                                                all_logs[p_name][sess_title] = {
+                                                    "attendance": att_vals,
+                                                    "report": rep_vals,
+                                                    "differences": diff_vals,
+                                                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                                                }
+                                                save_scan_logs(all_logs)
+                                                st.success("تمت المطابقة وحفظ النتيجة بنجاح!")
+                                                st.rerun()
 
                     elif current_view == "logs":
                         st.markdown("#### 📂 سجل الفحص والمطابقة المحفوظ حسب المشروع والنشاط:")
                         all_logs = load_scan_logs()
                         if not all_logs or p_name not in all_logs or not all_logs[p_name]:
-                            st.info("💡 لا توجد سجلات فحص محفوظة لهذا المشروع حتى الآن. قم بالانتقال إلى (2️⃣ مطابقة الحضور) ليتم حفظ الفحوصات تلقائياً هنا.")
+                            st.info("💡 لا توجد سجلات فحص محفوظة لهذا المشروع حتى الآن. قم بالانتقال إلى (2️⃣ مطابقة الحضور) وتنفيذ المطابقة لأي جلسة ليتم حفظها هنا.")
                         else:
                             project_logs = all_logs[p_name]
-                            for sess_name, log_data in project_logs.items():
+                            for sess_name, log_data in list(project_logs.items()):
                                 expander_title = f"📌 المسار الكامل: \u200e{sess_name}\u200f 🕒 (آخر فحص: \u200e{log_data.get('timestamp', 'غير معروف')}\u200f)"
                                 with st.expander(expander_title):
                                     saved_comp_data = {
@@ -505,7 +529,7 @@ else:
                                         "حالة التدقيق / الفروقات": log_data.get("differences", [])
                                     }
                                     st.table(saved_comp_data)
-                                    if st.button(f"🗑️ حذف هذا السجل", key=f"del_log_{p_name}_{sess_name}"):
+                                    if st.button(f"🗑️ حذف سجل هذه الجلسة نهائياً", key=f"del_log_{p_name}_{sess_name}"):
                                         del all_logs[p_name][sess_name]
                                         save_scan_logs(all_logs)
                                         st.success("تم حذف السجل بنجاح!")
