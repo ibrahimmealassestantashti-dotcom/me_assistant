@@ -254,10 +254,21 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         for uf in uploaded_gemini_files:
             prompt.append(uf)
 
-        response = client.models.generate_content(
-            model="gemini-3.5-flash",
-            contents=prompt,
-        )
+        # محاولة إعادة الاتصال التلقائي عند ضغط الخوادم (503 / Overloaded)
+        max_retries = 3
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model="gemini-3.5-flash",
+                    contents=prompt,
+                )
+                break
+            except ClientError as ce:
+                if getattr(ce, "code", None) == 503 and attempt < max_retries - 1:
+                    time.sleep(3 * (attempt + 1))  # انتظار تصاعدي قبل إعادة المحاولة
+                    continue
+                raise ce
         
         text_res = response.text
         cleaned = text_res.replace("```json", "").replace("```", "").strip()
@@ -272,7 +283,7 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         return result
 
     except ClientError as ce:
-        error_msg = f"ClientError ({ce.code}): {str(ce)}"
+        error_msg = f"ClientError ({getattr(ce, 'code', 'Unknown')}): {str(ce)}"
         err_tuple = (
             ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
             ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
