@@ -204,7 +204,7 @@ def analyze_session_files_with_ai(service, session_info, api_key):
     try:
         client = Groq(api_key=api_key.strip())
         files_text_content = ""
-        MAX_FILE_CHARS = 6000  # الحد الأقصى للحروف لكل ملف لمنع تجاوز الـ Tokens
+        MAX_FILE_CHARS = 6000  # حماية لمنع تجاوز الحد الأقصى للـ Tokens
 
         for f in att_files:
             b = get_file_content_bytes(service, f["id"], f["mimeType"])
@@ -256,12 +256,23 @@ def analyze_session_files_with_ai(service, session_info, api_key):
                 {"role": "system", "content": "أنت نظام استخراج بيانات وتحليل نصي دقيق، تعيد الرد بصيغة JSON صحيحة وقياسية فقط."},
                 {"role": "user", "content": prompt}
             ],
+            response_format={"type": "json_object"},
             temperature=0.1
         )
         
         text_res = completion.choices[0].message.content
         cleaned = text_res.replace("```json", "").replace("```", "").strip()
-        data = json.loads(cleaned)
+        
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError as jde:
+            err_tuple = (
+                ["❌ خطأ تنسيق JSON", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"],
+                ["❌ خطأ تنسيق JSON", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"],
+                [f"❌ JSON Decode Error: {str(jde)[:80]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
+            )
+            session_info["cached_metrics"] = err_tuple
+            return err_tuple
         
         result = (
             data.get("attendance_data", error_result[0]),
@@ -460,7 +471,6 @@ else:
                                 btn_label = "🔄 إعادة مطابقة" if has_logged else "⚡ مطابقة الجلسة"
                                 
                                 if col_m2.button(btn_label, key=f"match_btn_{p_name}_{idx_s}"):
-                                    # مسح الكاش القديم لتلك الجلسة لإجبار إعادة التحليل بالنص المقطوع الآمن
                                     if "cached_metrics" in sess:
                                         del sess["cached_metrics"]
                                         
@@ -539,7 +549,7 @@ else:
 
                                     gap_prompt = (
                                         "أنت خبير محترف في المتابعة والتقييم (M&E) لمشاريع الإغاثة والتنمية.\n"
-                                        "بناءً على بيانات الجلسات والمرفقات والفروقات المستخرجة للمشروع أدناه، قم إعداد "
+                                        "بناءً على بيانات الجلسات والمرفقات والفروقات المستخلصة للمشروع أدناه، قم إعداد "
                                         "تقرير تحليل فجوات ومخاطر شامل ومهني باللغة العربية.\n"
                                         "يجب أن يتضمن التقرير:\n"
                                         "1. ملخص تنفيذي لحالة التوثيق والاكتمال في المشروع.\n"
