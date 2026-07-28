@@ -262,4 +262,406 @@ def analyze_session_files_with_ai(service, session_info, api_key):
             )
             
             text_res = response.text
-            cleaned = text_res.replace("```json", "").replace("
+            cleaned = text_res.replace("```json", "").replace("```", "").strip()
+            data = json.loads(cleaned)
+            
+            result = (
+                data.get("attendance_data", error_result[0]),
+                data.get("report_data", error_result[1]),
+                data.get("differences", error_result[2])
+            )
+            session_info["cached_metrics"] = result
+            return result
+
+        except Exception as e:
+            error_str = str(e)
+            is_rate_limit = "429" in error_str or "RESOURCE_EXHAUSTED" in error_str
+            
+            # تنظيف الملفات المرفوعة عند الفشل
+            for uf in uploaded_gemini_files:
+                try:
+                    client.files.delete(name=uf.name)
+                except:
+                    pass
+
+            if is_rate_limit and attempt < max_retries - 1:
+                # الانتظار في حالة خطأ 429 وإعادة المحاولة
+                time.sleep(12 * (attempt + 1))
+                continue
+            else:
+                err_tuple = (
+                    ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
+                    ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
+                    [f"❌ {error_str[:100]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
+                )
+                session_info["cached_metrics"] = err_tuple
+                return err_tuple
+        finally:
+            for uf in uploaded_gemini_files:
+                try:
+                    client.files.delete(name=uf.name)
+                except:
+                    pass
+
+st.title("📊 نظام إدارة ومتابعة المشاريع الذكي (ME Assistant)")
+st.markdown("---")
+
+if "projects" not in st.session_state:
+    st.session_state.projects = load_saved_projects()
+
+with st.sidebar:
+    st.header("⚙️ إعدادات النظام والمشاريع")
+    
+    default_api_key = st.secrets.get("GEMINI_API_KEY", "")
+    GEMINI_API_KEY = st.text_input("مفتاح Gemini API أو رمز المصادقة:", value=default_api_key, type="password")
+    
+    st.markdown("---")
+    st.subheader("إضافة مشروع جديد")
+    new_project_name = st.text_input("اسم المشروع")
+    new_project_id = st.text_input("معرف المجلد (Folder ID)")
+    
+    if st.button("➕ إضافة وحفظ المشروع"):
+        if new_project_name and new_project_id:
+            st.session_state.projects[new_project_name] = new_project_id.strip()
+            save_projects(st.session_state.projects)
+            st.success(f"تم حفظ مشروع '{new_project_name}' بنجاح!")
+            st.rerun()
+        else:
+            st.error("يرجى إدخال البيانات كاملة.")
+            
+    if st.session_state.projects:
+        st.markdown("---")
+        st.subheader("📋 المشاريع المسجلة:")
+        for p_name in list(st.session_state.projects.keys()):
+            col_p1, col_p2 = st.columns([3, 1])
+            col_p1.text(p_name)
+            if col_p2.button("🗑️", key=f"del_{p_name}"):
+                del st.session_state.projects[p_name]
+                save_projects(st.session_state.projects)
+                st.rerun()
+
+service = get_drive_service()
+
+if not GEMINI_API_KEY:
+    st.warning("⚠️ الرجاء إدخال مفتاح الذكاء الاصطناعي في الشريط الجانبي لتفعيل التحليل وقراءة محتوى الملفات.")
+
+if not st.session_state.projects:
+    st.info("👈 قم بإضافة أول مشروع من الشريط الجانبي وسيبقى محفوظاً دائماً.")
+else:
+    project_names = list(st.session_state.projects.keys())
+    selected_tab = st.tabs(project_names)
+
+    for idx, p_name in enumerate(project_names):
+        with selected_tab[idx]:
+            root_id = st.session_state.projects[p_name]
+            
+            path_key = f"path_{p_name}"
+            if path_key not in st.session_state:
+                st.session_state[path_key] = [{"id": root_id, "name": p_name}]
+                
+            current_trail = st.session_state[path_key]
+            current_folder = current_trail[-1]
+            
+            st.subheader(f"📁 متصفح مجلدات مشروع: {p_name}")
+            trail_str = " ➔ ".join([node["name"] for node in current_trail])
+            st.info(f"📍 **المسار الحالي:** {trail_str}")
+            
+            col_nav1, _ = st.columns([1, 4])
+            with col_nav1:
+                if len(current_trail) > 1:
+                    if st.button("⬅️ العودة للمجلد السابق", key=f"back_{p_name}"):
+                        st.session_state[path_key].pop()
+                        st.rerun()
+                        
+            sub_folders, direct_files = get_folder_contents(service, current_folder["id"])
+            
+            if sub_folders:
+                folder_options = {sf["name"]: sf["id"] for sf in sub_folders}
+                selected_sub_name = st.selectbox(
+                    "اختر المجلد/النشاط للانتقال إليه:",
+                    ["-- اختر المجلد --"] + list(folder_options.keys()),
+                    key=f"select_folder_{p_name}"
+                )
+                
+                if selected_sub_name != "-- اختر المجلد --":
+                    next_id = folder_options[selected_sub_name]
+                    st.session_state[path_key].append({"id": next_id, "name": selected_sub_name})
+                    st.rerun()
+
+            st.markdown("---")
+            
+            btn_fetch = st.button(
+                f"⚡ جلب وتحليل محتوى ملفات الجلسات تحت ({current_folder['name']})", 
+                key=f"fetch_btn_{p_name}",
+                type="primary"
+            )
+
+            if btn_fetch:
+                with st.spinner("جاري تحديد مجلدات الجلسات واستخراج وقراءة محتوى الملفات الفعلية..."):
+                    base_path_str = " ➔ ".join([node["name"] for node in current_trail])
+                    sessions = fetch_structured_sessions(service, current_folder["id"], base_path_str)
+                    st.session_state[f"data_{p_name}"] = sessions
+
+            sessions_data = st.session_state.get(f"data_{p_name}", None)
+            
+            if sessions_data is not None:
+                if not sessions_data:
+                    st.warning("لم يتم العثور على جلسات مكتملة الهيكلية داخل هذا المجلد.")
+                else:
+                    st.success(f"تم اكتشاف {len(sessions_data)} جلسة/جلسات بالهيكلية الصحيحة!")
+                    st.markdown("---")
+                    
+                    st.subheader("🛠️ أدوات التحليل والمطابقة الذكية")
+                    b1, b2, b3, b4, b5, b6 = st.columns(6)
+                    
+                    if b1.button("1️⃣ فحص المرفقات", key=f"b1_{p_name}"):
+                        st.session_state[f"view_{p_name}"] = "attachments"
+                    if b2.button("2️⃣ مطابقة الحضور", key=f"b2_{p_name}"):
+                        st.session_state[f"view_{p_name}"] = "matching"
+                    if b3.button("3️⃣ إحصائية الفئات", key=f"b3_{p_name}"):
+                        st.session_state[f"view_{p_name}"] = "stats"
+                    if b4.button("4️⃣ سجل الفحص 📋", key=f"b4_{p_name}"):
+                        st.session_state[f"view_{p_name}"] = "logs"
+                    if b5.button("5️⃣ تقرير الفجوات 📊", key=f"b5_{p_name}"):
+                        st.session_state[f"view_{p_name}"] = "gap_analysis"
+                    if b6.button("6️⃣ المساعد الذكي 💬", key=f"b6_{p_name}"):
+                        st.session_state[f"view_{p_name}"] = "chat"
+
+                    current_view = st.session_state.get(f"view_{p_name}", None)
+
+                    if current_view == "attachments":
+                        st.markdown("#### 📋 نتيجة فحص مجلدات الجلسات الفرعية الثلاثة:")
+                        for sess in sessions_data:
+                            att_files = sess.get("attendance", {}).get("files", [])
+                            doc_files = sess.get("documentation", {}).get("files", [])
+                            rep_files = sess.get("report", {}).get("files", [])
+                            
+                            is_complete = len(att_files) > 0 and len(doc_files) > 0 and len(rep_files) > 0
+                            status_tag = "✅ مكتملة" if is_complete else "⚠️ ناقصة"
+
+                            sess_title = sess.get("session_name", "جلسة بدون عنوان")
+                            
+                            with st.expander(f"📌 المسار الكامل: \u200e{sess_title}\u200f — الحالة: {status_tag}"):
+                                col_f1, col_f2, col_f3 = st.columns(3)
+                                with col_f1:
+                                    st.write("**📄 ورقة الحضور:**")
+                                    if att_files:
+                                        for f in att_files: st.caption(f"• {f['name']}")
+                                    else:
+                                        st.error("❌ ملف الحضور مفقود")
+                                with col_f2:
+                                    st.write("**🖼️ صور التوثيق (Documentation):**")
+                                    if doc_files:
+                                        for f in doc_files: st.caption(f"• {f['name']}")
+                                    else:
+                                        st.warning("⚠️ صور التوثيق غير موجودة")
+                                with col_f3:
+                                    st.write("**📑 التقرير:**")
+                                    if rep_files:
+                                        for f in rep_files: st.caption(f"• {f['name']}")
+                                    else:
+                                        st.error("❌ التقرير مفقود")
+
+                    elif current_view == "matching":
+                        st.markdown("#### ⚖️ مطابقة المحتوى الفعلي لأوراق الحضور مع التقارير:")
+                        if not GEMINI_API_KEY:
+                            st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
+                        else:
+                            all_logs = load_scan_logs()
+                            if p_name not in all_logs:
+                                all_logs[p_name] = {}
+
+                            for i, sess in enumerate(sessions_data):
+                                sess_title = sess.get("session_name", "جلسة")
+                                
+                                if i > 0:
+                                    time.sleep(6)  # زيادة مهلة الانتظار لتفادي حد الطلبات
+                                    
+                                att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GEMINI_API_KEY)
+                                
+                                all_logs[p_name][sess_title] = {
+                                    "attendance": att_vals,
+                                    "report": rep_vals,
+                                    "differences": diff_vals,
+                                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                                }
+
+                                comparison_data = {
+                                    "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
+                                    "ورقة الحضور (محتوى الملف)": att_vals,
+                                    "التقرير (محتوى الملف)": rep_vals,
+                                    "حالة التدقيق / الفروقات": diff_vals
+                                }
+                                with st.expander(f"🔍 المسار الكامل: \u200e{sess_title}\u200f"):
+                                    st.table(comparison_data)
+
+                            save_scan_logs(all_logs)
+                            st.success("💾 تم حفظ نتائج المطابقة والفحص في 'سجل الفحص' بنجاح!")
+
+                    elif current_view == "logs":
+                        st.markdown("#### 📂 سجل الفحص والمطابقة المحفوظ حسب المشروع والنشاط:")
+                        all_logs = load_scan_logs()
+                        if not all_logs or p_name not in all_logs or not all_logs[p_name]:
+                            st.info("💡 لا توجد سجلات فحص محفوظة لهذا المشروع حتى الآن.")
+                        else:
+                            project_logs = all_logs[p_name]
+                            for sess_name, log_data in project_logs.items():
+                                expander_title = f"📌 المسار الكامل: \u200e{sess_name}\u200f 🕒 (آخر فحص: \u200e{log_data.get('timestamp', 'غير معروف')}\u200f)"
+                                with st.expander(expander_title):
+                                    saved_comp_data = {
+                                        "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
+                                        "ورقة الحضور": log_data.get("attendance", []),
+                                        "التقرير": log_data.get("report", []),
+                                        "حالة التدقيق / الفروقات": log_data.get("differences", [])
+                                    }
+                                    st.table(saved_comp_data)
+                                    if st.button(f"🗑️ حذف هذا السجل", key=f"del_log_{p_name}_{sess_name}"):
+                                        del all_logs[p_name][sess_name]
+                                        save_scan_logs(all_logs)
+                                        st.success("تم حذف السجل بنجاح!")
+                                        st.rerun()
+
+                    elif current_view == "gap_analysis":
+                        st.markdown("#### 📊 تقرير تحليل الفجوات والمخاطر التلقائي للمشروع:")
+                        if not GEMINI_API_KEY:
+                            st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
+                        else:
+                            if st.button("🚀 توليد تقرير الفجوات الشامل بالذكاء الاصطناعي", key=f"gen_gap_{p_name}"):
+                                with st.spinner("جاري تحليل كافة جلسات ومرفقات المشروع وإعداد تقرير الفجوات التلقائي..."):
+                                    gap_context = f"مشروع: {p_name} | المجلد الرئيسي: {current_folder['name']}\n\n"
+                                    for idx_s, s in enumerate(sessions_data):
+                                        if idx_s > 0:
+                                            time.sleep(6)
+                                        s_title = s.get('session_name', 'جلسة')
+                                        att_files = s.get("attendance", {}).get("files", [])
+                                        doc_files = s.get("documentation", {}).get("files", [])
+                                        rep_files = s.get("report", {}).get("files", [])
+                                        att_v, rep_v, diff_v = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
+                                        
+                                        gap_context += f"### المسار الكامل: {s_title}\n"
+                                        gap_context += f"- مرفقات الحضور: {'موجودة (' + str(len(att_files)) + ')' if att_files else 'مفقودة ❌'}\n"
+                                        gap_context += f"- صور التوثيق: {'موجودة (' + str(len(doc_files)) + ')' if doc_files else 'مفقودة ⚠️'}\n"
+                                        gap_context += f"- التقرير: {'موجود (' + str(len(rep_files)) + ')' if rep_files else 'مفقودة ❌'}\n"
+                                        gap_context += f"- بيانات الحضور المستخلصة: {att_v}\n"
+                                        gap_context += f"- بيانات التقرير المستخلصة: {rep_v}\n"
+                                        gap_context += f"- الفروقات وحالة التدقيق: {diff_v}\n\n"
+
+                                    gap_prompt = (
+                                        "أنت خبير محترف في المتابعة والتقييم (M&E) لمشاريع الإغاثة والتنمية.\n"
+                                        "بناءً على بيانات الجلسات والمرفقات والفروقات المستخرجة للمشروع أدناه، قم إعداد "
+                                        "تقرير تحليل فجوات ومخاطر شامل ومهني باللغة العربية.\n\n"
+                                        f"بيانات المشروع:\n{gap_context}"
+                                    )
+
+                                    try:
+                                        client_g = genai.Client(api_key=GEMINI_API_KEY.strip())
+                                        gap_res = client_g.models.generate_content(
+                                            model="gemini-2.0-flash",
+                                            contents=gap_prompt
+                                        )
+                                        st.session_state[f"gap_report_{p_name}"] = gap_res.text
+                                    except Exception as e:
+                                        st.error(f"❌ حدث خطأ أثناء توليد التقرير: {e}")
+
+                            if f"gap_report_{p_name}" in st.session_state:
+                                st.markdown("---")
+                                st.markdown(st.session_state[f"gap_report_{p_name}"])
+
+                    elif current_view == "stats":
+                        st.markdown("#### 📊 إحصائية المستفيدين لكل جلسة على حدة بناءً على محتوى الملفات الحقيقي:")
+                        
+                        if not GEMINI_API_KEY:
+                            st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
+                        else:
+                            tot_men_all, tot_women_all, tot_boys_all, tot_girls_all, tot_pwd_all = 0, 0, 0, 0, 0
+                            
+                            for idx_s, s in enumerate(sessions_data):
+                                if idx_s > 0:
+                                    time.sleep(6)
+                                sess_title = s.get("session_name", "جلسة بدون عنوان")
+                                att_v, _, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
+                                
+                                s_men = extract_number(att_v[2])
+                                s_women = extract_number(att_v[3])
+                                s_boys = extract_number(att_v[4])
+                                s_girls = extract_number(att_v[5])
+                                s_pwd = extract_number(att_v[6])
+                                
+                                tot_men_all += s_men
+                                tot_women_all += s_women
+                                tot_boys_all += s_boys
+                                tot_girls_all += s_girls
+                                tot_pwd_all += s_pwd
+                                
+                                with st.expander(f"📌 المسار الكامل: \u200e{sess_title}\u200f", expanded=True):
+                                    c1, c2, c3, c4, c5 = st.columns(5)
+                                    c1.metric("👨 رجال", str(s_men))
+                                    c2.metric("👩 نساء", str(s_women))
+                                    c3.metric("👧 فتيات", str(s_girls))
+                                    c4.metric("👶 أطفال ذكور", str(s_boys))
+                                    c5.metric("♿ ذوي الاحتياجات", str(s_pwd))
+                            
+                            st.markdown("---")
+                            st.markdown("### 📈 إجمالي المستفيدين لجميع الجلسات المعروضة:")
+                            tot_c1, tot_c2, tot_c3, tot_c4, tot_c5 = st.columns(5)
+                            tot_c1.metric("👨 إجمالي الرجال", str(tot_men_all))
+                            tot_c2.metric("👩 إجمالي النساء", str(tot_women_all))
+                            tot_c3.metric("👧 إجمالي الفتيات", str(tot_girls_all))
+                            tot_c4.metric("👶 إجمالي الأطفال", str(tot_boys_all))
+                            tot_c5.metric("♿ إجمالي ذوي الاحتياجات", str(tot_pwd_all))
+
+                    elif current_view == "chat":
+                        st.markdown("---")
+                        st.subheader("💬 دردشة المساعد الذكي لمراجعة محتوى الجلسات")
+
+                        if not GEMINI_API_KEY:
+                            st.error("يرجى إدخال مفتاح الذكاء الاصطناعي في الشريط الجانبي لتفعيل المحادثة.")
+                        else:
+                            chat_history_key = f"messages_{p_name}"
+                            if chat_history_key not in st.session_state:
+                                st.session_state[chat_history_key] = []
+
+                            for message in st.session_state[chat_history_key]:
+                                with st.chat_message(message["role"]):
+                                    st.write(message["content"])
+
+                            if prompt_text := st.chat_input("وجه سؤالك للذكاء الاصطناعي حول محتوى ملفات الجلسات..."):
+                                st.session_state[chat_history_key].append({"role": "user", "content": prompt_text})
+                                with st.chat_message("user"):
+                                    st.write(prompt_text)
+
+                                context_text = f"مشروع: {p_name} | المجلد: {current_folder['name']}\n"
+                                context_text += f"عدد الجلسات الإجمالي: {len(sessions_data)}\n\n"
+                                
+                                for s in sessions_data:
+                                    s_title = s.get('session_name', '')
+                                    att_v, rep_v, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
+                                    context_text += f"- {s_title}:\n"
+                                    context_text += f"  * الحضور المستخلص: {att_v}\n"
+                                    context_text += f"  * التقرير المستخلص: {rep_v}\n"
+
+                                with st.chat_message("assistant"):
+                                    with st.spinner("جاري تحليل ومراجعة محتوى الملفات والإجابة..."):
+                                        ai_prompt = f"أنت مساعد ذكي مدقق لمشاريع المتابعة والتقييم.\nأجب باللغة العربية:\n{context_text}\nسؤال المستخدم: {prompt_text}"
+                                        
+                                        try:
+                                            client = genai.Client(api_key=GEMINI_API_KEY.strip())
+                                            response = client.models.generate_content(
+                                                model="gemini-2.0-flash",
+                                                contents=ai_prompt,
+                                            )
+                                            ai_response = response.text
+                                            st.write(ai_response)
+                                            st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
+                                        except ClientError as ce:
+                                            st.error(f"❌ خطأ حد الاستخدام (كود {ce.code}): يرجى الانتظار قليلاً.")
+                                        except Exception as e:
+                                            st.error(f"❌ حدث خطأ غير متوقع: {e}")
+
+st.markdown("---")
+st.markdown(
+    "<div style='text-align: center; color: #888888; padding: 10px;'>"
+    "تم تصميم وتطوير البرنامج بواسطة <b>إبراهيم الجاسم</b> © 2026"
+    "</div>", 
+    unsafe_allow_html=True
+)
