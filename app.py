@@ -186,22 +186,26 @@ def extract_number(text):
     match = re.search(r'\d+', str(text))
     return int(match.group()) if match else 0
 
-def call_gemini_with_retry(client, model, contents, max_retries=4, initial_delay=3):
-    """دالة مساعدة لإرسال الطلبات لنموذج جيميناي مع إعادة المحاولة تلقائياً عند حدوث ضغط 503"""
+def call_gemini_with_retry(client, model, contents, max_retries=5, initial_delay=5):
+    """دالة محسنة للتعامل مع أخطاء الاستنفاد (429) والضغط (503) عبر الانتظار التصاعدي"""
     for attempt in range(max_retries):
         try:
             return client.models.generate_content(model=model, contents=contents)
         except ClientError as ce:
-            if getattr(ce, "code", None) == 503 and attempt < max_retries - 1:
-                time.sleep(initial_delay * (2 ** attempt))
+            code = getattr(ce, "code", None)
+            if code in [429, 503] and attempt < max_retries - 1:
+                sleep_time = initial_delay * (2 ** attempt)
+                time.sleep(sleep_time)
                 continue
             raise ce
         except Exception as e:
-            if "503" in str(e) and attempt < max_retries - 1:
-                time.sleep(initial_delay * (2 ** attempt))
+            err_str = str(e)
+            if any(err in err_str for err in ["429", "503", "RESOURCE_EXHAUSTED"]) and attempt < max_retries - 1:
+                sleep_time = initial_delay * (2 ** attempt)
+                time.sleep(sleep_time)
                 continue
             raise e
-    raise Exception("فشلت المحاولات بسبب استمرار الضغط العالي على الخادم (503).")
+    raise Exception("فشلت المحاولات بسبب استنفاد الحصة المتاحة (429) أو ضغط الخادم (503).")
 
 def analyze_session_files_with_ai(service, session_info, api_key):
     if "cached_metrics" in session_info:
@@ -211,9 +215,9 @@ def analyze_session_files_with_ai(service, session_info, api_key):
     rep_files = session_info.get("report", {}).get("files", [])
     
     error_result = (
-        ["❌ غير متوفر", "❌ غير متوفر", "❌ غير متوفر", "❌ غير متوفر", "❌ غير متوفر", "❌ غير متوفر", "❌ غير متوفر"],
-        ["❌ غير متوفر", "❌ غير متوفر", "❌ غير متوفر", "❌ غير متوفر", "❌ غير متوفر", "❌ غير متوفر", "❌ غير متوفر"],
-        ["❌ ملفات الحضور أو التقرير مفقودة", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
+        ["❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ"],
+        ["❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ"],
+        ["❌ تجاوز الحد المسموح (429) أو ملفات مفقودة", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
     )
 
     if not api_key or (not att_files and not rep_files):
@@ -290,10 +294,10 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         return result
 
     except ClientError as ce:
-        error_msg = f"ClientError ({getattr(ce, 'code', '503')}): {str(ce)}"
+        error_msg = f"ClientError ({getattr(ce, 'code', '429')}): {str(ce)}"
         err_tuple = (
-            ["❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم"],
-            ["❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم"],
+            ["❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)"],
+            ["❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)"],
             [f"❌ {error_msg[:120]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
         )
         session_info["cached_metrics"] = err_tuple
@@ -502,6 +506,9 @@ else:
                                 }
                                 with st.expander(f"🔍 المسار الكامل: \u200e{sess_title}\u200f"):
                                     st.table(comparison_data)
+                                
+                                # مهلة قصيرة بين كل جلسة لتجنب تجاوز حد الطلبات (Rate Limit / 429)
+                                time.sleep(3)
 
                             save_scan_logs(all_logs)
                             st.success("💾 تم حفظ نتائج المطابقة والفحص في 'سجل الفحص' بنجاح!")
@@ -551,6 +558,7 @@ else:
                                         gap_context += f"- بيانات الحضور المستخلصة: {att_v}\n"
                                         gap_context += f"- بيانات التقرير المستخلصة: {rep_v}\n"
                                         gap_context += f"- الفروقات وحالة التدقيق: {diff_v}\n\n"
+                                        time.sleep(2)
 
                                     gap_prompt = (
                                         "أنت خبير محترف في المتابعة والتقييم (M&E) لمشاريع الإغاثة والتنمية.\n"
@@ -610,6 +618,7 @@ else:
                                     c3.metric("👧 فتيات", str(s_girls))
                                     c4.metric("👶 أطفال ذكور", str(s_boys))
                                     c5.metric("♿ ذوي الاحتياجات", str(s_pwd))
+                                time.sleep(2)
                             
                             st.markdown("---")
                             st.markdown("### 📈 إجمالي المستفيدين لجميع الجلسات المعروضة:")
@@ -656,10 +665,6 @@ else:
                                         
                                         try:
                                             client = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                            # استخدام إعادة المحاولة للدردشة أيضاً
-                                            class DummyInteraction:
-                                                pass
-                                            
                                             response = call_gemini_with_retry(
                                                 client=client,
                                                 model="gemini-3.5-flash",
@@ -669,7 +674,7 @@ else:
                                             st.write(ai_response)
                                             st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
                                         except ClientError as ce:
-                                            st.error(f"❌ خطأ الخادم (كود {getattr(ce, 'code', '503')}): الخادم يواجه ضغطاً حالياً. يرجى الانتظار قليلاً وإعادة المحاولة.")
+                                            st.error(f"❌ خطأ الحصة/الخادم (كود {getattr(ce, 'code', '429')}): تم استنفاد الحد المسموح للطلبات مؤقتاً. يرجى الانتظار قليلاً.")
                                         except Exception as e:
                                             st.error(f"❌ حدث خطأ غير متوقع: {e}")
 
