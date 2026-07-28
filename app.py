@@ -254,19 +254,19 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         for uf in uploaded_gemini_files:
             prompt.append(uf)
 
-        # محاولة إعادة الاتصال التلقائي عند ضغط الخوادم (503 / Overloaded)
+        # استخدام نموذج gemini-2.0-flash المعتمد والمستقر
         max_retries = 3
         response = None
         for attempt in range(max_retries):
             try:
                 response = client.models.generate_content(
-                    model="gemini-3.5-flash",
+                    model="gemini-2.0-flash",
                     contents=prompt,
                 )
                 break
             except ClientError as ce:
-                if getattr(ce, "code", None) == 503 and attempt < max_retries - 1:
-                    time.sleep(3 * (attempt + 1))  # انتظار تصاعدي قبل إعادة المحاولة
+                if attempt < max_retries - 1:
+                    time.sleep(2 * (attempt + 1))
                     continue
                 raise ce
         
@@ -282,15 +282,6 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         session_info["cached_metrics"] = result
         return result
 
-    except ClientError as ce:
-        error_msg = f"ClientError ({getattr(ce, 'code', 'Unknown')}): {str(ce)}"
-        err_tuple = (
-            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
-            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
-            [f"❌ {error_msg[:100]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
-        )
-        session_info["cached_metrics"] = err_tuple
-        return err_tuple
     except Exception as e:
         error_msg = str(e)
         err_tuple = (
@@ -298,7 +289,6 @@ def analyze_session_files_with_ai(service, session_info, api_key):
             ["❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة"],
             [f"❌ سبب الخطأ: {error_msg[:120]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
         )
-        session_info["cached_metrics"] = err_tuple
         return err_tuple
     finally:
         for uf in uploaded_gemini_files:
@@ -494,15 +484,18 @@ else:
                                         if col_m1.button("🔄 إعادة مطابقة هذه الجلسة", key=f"re_match_{p_name}_{i}"):
                                             with st.spinner("جاري إعادة مطابقة ملفات الجلسة..."):
                                                 att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GEMINI_API_KEY)
-                                                all_logs[p_name][sess_title] = {
-                                                    "attendance": att_vals,
-                                                    "report": rep_vals,
-                                                    "differences": diff_vals,
-                                                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-                                                }
-                                                save_scan_logs(all_logs)
-                                                st.success("تم تحديث المطابقة بنجاح!")
-                                                st.rerun()
+                                                if "❌" not in diff_vals[0]:
+                                                    all_logs[p_name][sess_title] = {
+                                                        "attendance": att_vals,
+                                                        "report": rep_vals,
+                                                        "differences": diff_vals,
+                                                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                                                    }
+                                                    save_scan_logs(all_logs)
+                                                    st.success("تم تحديث المطابقة بنجاح!")
+                                                    st.rerun()
+                                                else:
+                                                    st.error("فشلت عملية المطابقة، يرجى المحاولة لاحقاً.")
                                         if col_m2.button("🗑️ حذف سجل هذه الجلسة", key=f"del_match_log_{p_name}_{i}"):
                                             if sess_title in all_logs[p_name]:
                                                 del all_logs[p_name][sess_title]
@@ -513,21 +506,24 @@ else:
                                         if st.button("⚡ تنفيذ المطابقة لهذه الجلسة فقط", key=f"do_match_{p_name}_{i}", type="primary"):
                                             with st.spinner("جاري قراءة وتحليل ملفات الجلسة..."):
                                                 att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GEMINI_API_KEY)
-                                                all_logs[p_name][sess_title] = {
-                                                    "attendance": att_vals,
-                                                    "report": rep_vals,
-                                                    "differences": diff_vals,
-                                                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-                                                }
-                                                save_scan_logs(all_logs)
-                                                st.success("تمت المطابقة وحفظ النتيجة بنجاح!")
-                                                st.rerun()
+                                                if "❌" not in diff_vals[0]:
+                                                    all_logs[p_name][sess_title] = {
+                                                        "attendance": att_vals,
+                                                        "report": rep_vals,
+                                                        "differences": diff_vals,
+                                                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                                                    }
+                                                    save_scan_logs(all_logs)
+                                                    st.success("تمت المطابقة وحفظ النتيجة بنجاح!")
+                                                    st.rerun()
+                                                else:
+                                                    st.error("فشلت المطابقة، يرجى المحاولة مرة أخرى لاحقاً.")
 
                     elif current_view == "logs":
                         st.markdown("#### 📂 سجل الفحص والمطابقة المحفوظ حسب المشروع والنشاط:")
                         all_logs = load_scan_logs()
                         if not all_logs or p_name not in all_logs or not all_logs[p_name]:
-                            st.info("💡 لا توجد سجلات فحص محفوظة لهذا المشروع حتى الآن. قم بالانتقال إلى (2️⃣ مطابقة الحضور) وتنفيذ المطابقة لأي جلسة ليتم حفظها هنا.")
+                            st.info("💡 لا توجد سجلات فحص محفوظة لهذا المشروع حتى الآن.")
                         else:
                             project_logs = all_logs[p_name]
                             for sess_name, log_data in list(project_logs.items()):
@@ -573,18 +569,13 @@ else:
                                         "أنت خبير محترف في المتابعة والتقييم (M&E) لمشاريع الإغاثة والتنمية.\n"
                                         "بناءً على بيانات الجلسات والمرفقات والفروقات المستخرجة للمشروع أدناه، قم إعداد "
                                         "تقرير تحليل فجوات ومخاطر شامل ومهني باللغة العربية.\n"
-                                        "يجب أن يتضمن التقرير:\n"
-                                        "1. ملخص تنفيذي لحالة التوثيق والاكتمال في المشروع.\n"
-                                        "2. أبرز الفجوات والمشاكل العددية أو النقص في الملفات لكل جلسة.\n"
-                                        "3. تقييم المخاطر الميدانية والتوثيقية.\n"
-                                        "4. توصيات عملية وعاجلة لفريق المشروع لمعالجة هذه الفجوات.\n\n"
                                         f"بيانات المشروع:\n{gap_context}"
                                     )
 
                                     try:
                                         client_g = genai.Client(api_key=GEMINI_API_KEY.strip())
                                         gap_res = client_g.models.generate_content(
-                                            model="gemini-3.5-flash",
+                                            model="gemini-2.0-flash",
                                             contents=gap_prompt
                                         )
                                         st.session_state[f"gap_report_{p_name}"] = gap_res.text
@@ -597,7 +588,6 @@ else:
 
                     elif current_view == "stats":
                         st.markdown("#### 📊 إحصائية المستفيدين لكل جلسة على حدة بناءً على محتوى الملفات الحقيقي:")
-                        
                         if not GEMINI_API_KEY:
                             st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
                         else:
@@ -639,7 +629,6 @@ else:
                     elif current_view == "chat":
                         st.markdown("---")
                         st.subheader("💬 دردشة المساعد الذكي لمراجعة محتوى الجلسات")
-
                         if not GEMINI_API_KEY:
                             st.error("يرجى إدخال مفتاح الذكاء الاصطناعي في الشريط الجانبي لتفعيل المحادثة.")
                         else:
@@ -657,32 +646,25 @@ else:
                                     st.write(prompt_text)
 
                                 context_text = f"مشروع: {p_name} | المجلد: {current_folder['name']}\n"
-                                context_text += f"عدد الجلسات الإجمالي: {len(sessions_data)}\n\n"
-                                
                                 for s in sessions_data:
                                     s_title = s.get('session_name', '')
                                     att_v, rep_v, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
-                                    context_text += f"- {s_title}:\n"
-                                    context_text += f"  * الحضور المستخلص: {att_v}\n"
-                                    context_text += f"  * التقرير المستخلص: {rep_v}\n"
+                                    context_text += f"- {s_title}:\n  * الحضور المستخلص: {att_v}\n  * التقرير المستخلص: {rep_v}\n"
 
                                 with st.chat_message("assistant"):
                                     with st.spinner("جاري تحليل ومراجعة محتوى الملفات والإجابة..."):
-                                        ai_prompt = f"أنت مساعد ذكي مدقق لمشاريع المتابعة والتقييم.\nأجب باللغة العربية بناءً على محتوى الملفات الحقيقي المستخلص:\n{context_text}\nسؤال المستخدم: {prompt_text}"
-                                        
+                                        ai_prompt = f"أنت مساعد ذكي مدقق لمشاريع المتابعة والتقييم.\nأجب باللغة العربية بناءً على محتوى الملفات الحقيقي:\n{context_text}\nسؤال المستخدم: {prompt_text}"
                                         try:
                                             client = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                            interaction = client.interactions.create(
-                                                model="gemini-3.5-flash",
-                                                input=ai_prompt,
+                                            response = client.models.generate_content(
+                                                model="gemini-2.0-flash",
+                                                contents=ai_prompt,
                                             )
-                                            ai_response = interaction.output_text
+                                            ai_response = response.text
                                             st.write(ai_response)
                                             st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
-                                        except ClientError as ce:
-                                            st.error(f"❌ خطأ حد الاستخدام في الخطة المجانية (كود {ce.code}): يرجى الانتظار دقيقة ثم إعادة المحاولة.")
                                         except Exception as e:
-                                            st.error(f"❌ حدث خطأ غير متوقع: {e}")
+                                            st.error(f"❌ حدث خطأ: {e}")
 
 st.markdown("---")
 st.markdown(
