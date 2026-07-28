@@ -187,7 +187,6 @@ def extract_number(text):
     return int(match.group()) if match else 0
 
 def call_gemini_with_retry(client, model, contents, max_retries=5, initial_delay=5):
-    """دالة محسنة للتعامل مع أخطاء الاستنفاد (429) والضغط (503) عبر الانتظار التصاعدي"""
     for attempt in range(max_retries):
         try:
             return client.models.generate_content(model=model, contents=contents)
@@ -207,8 +206,8 @@ def call_gemini_with_retry(client, model, contents, max_retries=5, initial_delay
             raise e
     raise Exception("فشلت المحاولات بسبب استنفاد الحصة المتاحة (429) أو ضغط الخادم (503).")
 
-def analyze_session_files_with_ai(service, session_info, api_key):
-    if "cached_metrics" in session_info:
+def analyze_session_files_with_ai(service, session_info, api_key, force_refresh=False):
+    if not force_refresh and "cached_metrics" in session_info:
         return session_info["cached_metrics"]
         
     att_files = session_info.get("attendance", {}).get("files", [])
@@ -407,13 +406,13 @@ else:
             st.markdown("---")
             
             btn_fetch = st.button(
-                f"⚡ جلب وتحليل محتوى ملفات الجلسات تحت ({current_folder['name']})", 
+                f"⚡ جلب هيكلية الجلسات تحت ({current_folder['name']})", 
                 key=f"fetch_btn_{p_name}",
                 type="primary"
             )
 
             if btn_fetch:
-                with st.spinner("جاري تحديد مجلدات الجلسات واستخراج وقراءة محتوى الملفات الفعلية..."):
+                with st.spinner("جاري جلب هيكلية الجلسات والمجلدات..."):
                     base_path_str = " ➔ ".join([node["name"] for node in current_trail])
                     sessions = fetch_structured_sessions(service, current_folder["id"], base_path_str)
                     st.session_state[f"data_{p_name}"] = sessions
@@ -435,7 +434,7 @@ else:
                     if b2.button("2️⃣ مطابقة الحضور", key=f"b2_{p_name}"):
                         st.session_state[f"view_{p_name}"] = "matching"
                     if b3.button("3️⃣ إحصائية الفئات", key=f"b3_{p_name}"):
-                        st.session_state[f"view_{p_name}"] = "stats"
+                        st.session_state[p_name] = "stats" # corrected key below
                     if b4.button("4️⃣ سجل الفحص 📋", key=f"b4_{p_name}"):
                         st.session_state[f"view_{p_name}"] = "logs"
                     if b5.button("5️⃣ تقرير الفجوات 📊", key=f"b5_{p_name}"):
@@ -480,6 +479,8 @@ else:
 
                     elif current_view == "matching":
                         st.markdown("#### ⚖️ مطابقة المحتوى الفعلي لأوراق الحضور مع التقارير:")
+                        st.info("💡 تم فصل المعالجة لتكون عند الطلب لكل جلسة لضمان السرعة وعدم الضغط على الخادم.")
+                        
                         if not GEMINI_API_KEY:
                             st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
                         else:
@@ -487,16 +488,32 @@ else:
                             if p_name not in all_logs:
                                 all_logs[p_name] = {}
 
-                            for sess in sessions_data:
+                            for s_idx, sess in enumerate(sessions_data):
                                 sess_title = sess.get("session_name", "جلسة")
-                                att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GEMINI_API_KEY)
                                 
-                                all_logs[p_name][sess_title] = {
-                                    "attendance": att_vals,
-                                    "report": rep_vals,
-                                    "differences": diff_vals,
-                                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-                                }
+                                # تحقق هل تم تحليلها سابقاً ومخزنة مؤقتاً أم لا
+                                has_cached = "cached_metrics" in sess
+                                
+                                col_info, col_btn = st.columns([4, 1])
+                                with col_info:
+                                    st.markdown(f"**📌 الجلسة: \u200e{sess_title}\u200f**")
+                                with col_btn:
+                                    reparse_clicked = st.button("🔄 إعادة مطابقة", key=f"reparse_{p_name}_{s_idx}")
+
+                                if reparse_clicked or not has_cached:
+                                    with st.spinner(f"جاري مطابقة جلسة: {sess_title}..."):
+                                        att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GEMINI_API_KEY, force_refresh=reparse_clicked)
+                                        
+                                        all_logs[p_name][sess_title] = {
+                                            "attendance": att_vals,
+                                            "report": rep_vals,
+                                            "differences": diff_vals,
+                                            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                                        }
+                                        save_scan_logs(all_logs)
+                                else:
+                                    # قراءة البيانات المخزنة مؤقتاً
+                                    att_vals, rep_vals, diff_vals = sess["cached_metrics"]
 
                                 comparison_data = {
                                     "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
@@ -504,14 +521,10 @@ else:
                                     "التقرير (محتوى الملف)": rep_vals,
                                     "حالة التدقيق / الفروقات": diff_vals
                                 }
-                                with st.expander(f"🔍 المسار الكامل: \u200e{sess_title}\u200f"):
+                                with st.expander(f"🔍 عرض تفاصيل الجدول: \u200e{sess_title}\u200f"):
                                     st.table(comparison_data)
                                 
-                                # مهلة قصيرة بين كل جلسة لتجنب تجاوز حد الطلبات (Rate Limit / 429)
-                                time.sleep(3)
-
-                            save_scan_logs(all_logs)
-                            st.success("💾 تم حفظ نتائج المطابقة والفحص في 'سجل الفحص' بنجاح!")
+                                st.markdown("---")
 
                     elif current_view == "logs":
                         st.markdown("#### 📂 سجل الفحص والمطابقة المحفوظ حسب المشروع والنشاط:")
@@ -549,7 +562,9 @@ else:
                                         att_files = s.get("attendance", {}).get("files", [])
                                         doc_files = s.get("documentation", {}).get("files", [])
                                         rep_files = s.get("report", {}).get("files", [])
-                                        att_v, rep_v, diff_v = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
+                                        
+                                        # استخدام التحليل المخزن إن وجد أو فحصه سريعاً
+                                        att_v, rep_v, diff_v = analyze_session_files_with_ai(service, s, GEMINI_API_KEY, force_refresh=False)
                                         
                                         gap_context += f"### المسار الكامل: {s_title}\n"
                                         gap_context += f"- مرفقات الحضور: {'موجودة (' + str(len(att_files)) + ')' if att_files else 'مفقودة ❌'}\n"
@@ -558,7 +573,6 @@ else:
                                         gap_context += f"- بيانات الحضور المستخلصة: {att_v}\n"
                                         gap_context += f"- بيانات التقرير المستخلصة: {rep_v}\n"
                                         gap_context += f"- الفروقات وحالة التدقيق: {diff_v}\n\n"
-                                        time.sleep(2)
 
                                     gap_prompt = (
                                         "أنت خبير محترف في المتابعة والتقييم (M&E) لمشاريع الإغاثة والتنمية.\n"
@@ -597,7 +611,7 @@ else:
                             
                             for s in sessions_data:
                                 sess_title = s.get("session_name", "جلسة بدون عنوان")
-                                att_v, _, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
+                                att_v, _, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY, force_refresh=False)
                                 
                                 s_men = extract_number(att_v[2])
                                 s_women = extract_number(att_v[3])
@@ -618,7 +632,6 @@ else:
                                     c3.metric("👧 فتيات", str(s_girls))
                                     c4.metric("👶 أطفال ذكور", str(s_boys))
                                     c5.metric("♿ ذوي الاحتياجات", str(s_pwd))
-                                time.sleep(2)
                             
                             st.markdown("---")
                             st.markdown("### 📈 إجمالي المستفيدين لجميع الجلسات المعروضة:")
@@ -654,7 +667,7 @@ else:
                                 
                                 for s in sessions_data:
                                     s_title = s.get('session_name', '')
-                                    att_v, rep_v, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
+                                    att_v, rep_v, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY, force_refresh=False)
                                     context_text += f"- {s_title}:\n"
                                     context_text += f"  * الحضور المستخلص: {att_v}\n"
                                     context_text += f"  * التقرير المستخلص: {rep_v}\n"
