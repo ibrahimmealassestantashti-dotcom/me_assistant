@@ -177,7 +177,8 @@ def get_file_content_bytes(service, file_id, mime_type):
             status, done = downloader.next_chunk()
         fh.seek(0)
         return fh.read()
-    except Exception:
+    except Exception as e:
+        st.error(f"خطأ في تحميل ملف Drive (ID: {file_id}): {e}")
         return None
 
 def extract_number(text):
@@ -186,25 +187,15 @@ def extract_number(text):
     match = re.search(r'\d+', str(text))
     return int(match.group()) if match else 0
 
-def call_gemini_with_retry(client, model, contents, max_retries=5, initial_delay=5):
+def call_gemini_with_retry(client, model, contents, max_retries=3, initial_delay=3):
     for attempt in range(max_retries):
         try:
             return client.models.generate_content(model=model, contents=contents)
-        except ClientError as ce:
-            code = getattr(ce, "code", None)
-            if code in [429, 503] and attempt < max_retries - 1:
-                sleep_time = initial_delay * (2 ** attempt)
-                time.sleep(sleep_time)
-                continue
-            raise ce
         except Exception as e:
-            err_str = str(e)
-            if any(err in err_str for err in ["429", "503", "RESOURCE_EXHAUSTED"]) and attempt < max_retries - 1:
-                sleep_time = initial_delay * (2 ** attempt)
-                time.sleep(sleep_time)
+            if attempt < max_retries - 1:
+                time.sleep(initial_delay * (2 ** attempt))
                 continue
             raise e
-    raise Exception("فشلت المحاولات بسبب استنفاد الحصة المتاحة (429) أو ضغط الخادم (503).")
 
 def analyze_session_files_with_ai(service, session_info, api_key, force_refresh=False):
     if not force_refresh and "cached_metrics" in session_info:
@@ -213,15 +204,19 @@ def analyze_session_files_with_ai(service, session_info, api_key, force_refresh=
     att_files = session_info.get("attendance", {}).get("files", [])
     rep_files = session_info.get("report", {}).get("files", [])
     
-    error_result = (
-        ["❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ"],
-        ["❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ", "❌ استنفاد الحصة/خطأ"],
-        ["❌ تجاوز الحد المسموح (429) أو ملفات مفقودة", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
-    )
+    if not api_key:
+        st.error("❌ مفتاح Gemini API غير موجود.")
+        return None
 
-    if not api_key or (not att_files and not rep_files):
-        session_info["cached_metrics"] = error_result
-        return error_result
+    if not att_files and not rep_files:
+        st.warning(f"⚠️ الجلسة '{session_info.get('session_name')}' لا تحتوي على ملفات حضور أو تقارير.")
+        empty_res = (
+            ["لا توجد ملفات", "-", "-", "-", "-", "-", "-"],
+            ["لا توجد ملفات", "-", "-", "-", "-", "-", "-"],
+            ["الملفات مفقودة بالمجلد", "-", "-", "-", "-", "-", "-"]
+        )
+        session_info["cached_metrics"] = empty_res
+        return empty_res
 
     client = genai.Client(api_key=api_key.strip())
     uploaded_gemini_files = []
@@ -256,15 +251,15 @@ def analyze_session_files_with_ai(service, session_info, api_key, force_refresh=
                     pass
 
         if not uploaded_gemini_files:
-            session_info["cached_metrics"] = error_result
-            return error_result
+            st.error("❌ تعذر رفع أي ملف إلى خادم الذكاء الاصطناعي.")
+            return None
 
         prompt = [
             "أنت مدقق ومراجع دقيق لمستندات المشاريع والمخيمات.",
             "قم بقراءة محتوى الملفات المرفقة فعلياً (أوراق الحضور وتقارير الإنجاز) واستخرج القيم الحقيقية بدقة تامة.",
-            "تحذير صارم: يمنع منعاً باتاً افتراض أو تخمين أي أرقام أو وضع أصفار إذا كانت البيانات ناقصة أو غير واضحة. إذا وجد نقص أو تعذر القراءة، يجب كتابة عبارات صريحة تدل على الخطأ مثل '❌ خطأ/غير واضح'.",
-            "قم بمقارنة أوراق الحضور مع التقرير لكل بند بدقة تامة واكتب نتيجة المقارنة (مثلاً: مطابق، أو وجود فرق محدد).",
-            "أجب بصيغة JSON صارمة فقط بالشكل التالي ودون أي نصوص إضافية:",
+            "تحذير صارم: يمنع منعاً باتاً افتراض أو تخمين أي أرقام أو وضع أصفار إذا كانت البيانات ناقصة أو غير واضحة. إذا وجد نقص أو تعذر القراءة، يجب كتابة عبارات صريحة تدل على الخطأ مثل '❌ غير واضح'.",
+            "قم بمقارنة أوراق الحضور مع التقرير لكل بند بدقة تامة واكتب نتيجة المقارنة.",
+            "أجب بصيغة JSON صارمة فقط بالشكل التالي ودون أي نصوص إضافية أو علامات تMarkdown خارجية خارج الكود:",
             "{\n"
             '  "attendance_data": ["التاريخ", "الإجمالي", "رجال", "نساء", "أطفال ذكور", "فتيات", "ذوي احتياجات"],\n'
             '  "report_data": ["التاريخ", "الإجمالي", "رجال", "نساء", "أطفال ذكور", "فتيات", "ذوي احتياجات"],\n'
@@ -274,9 +269,10 @@ def analyze_session_files_with_ai(service, session_info, api_key, force_refresh=
         for uf in uploaded_gemini_files:
             prompt.append(uf)
 
+        # استبدال النموذج بنموذج مستقر
         response = call_gemini_with_retry(
             client=client,
-            model="gemini-3.5-flash",
+            model="gemini-2.5-flash",
             contents=prompt
         )
         
@@ -285,28 +281,20 @@ def analyze_session_files_with_ai(service, session_info, api_key, force_refresh=
         data = json.loads(cleaned)
         
         result = (
-            data.get("attendance_data", error_result[0]),
-            data.get("report_data", error_result[1]),
-            data.get("differences", error_result[2])
+            data.get("attendance_data", []),
+            data.get("report_data", []),
+            data.get("differences", [])
         )
         session_info["cached_metrics"] = result
         return result
 
-    except ClientError as ce:
-        error_msg = f"ClientError ({getattr(ce, 'code', '429')}): {str(ce)}"
-        err_tuple = (
-            ["❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)"],
-            ["❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)", "❌ استنفاد الحصة (429)"],
-            [f"❌ {error_msg[:120]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
-        )
-        session_info["cached_metrics"] = err_tuple
-        return err_tuple
     except Exception as e:
-        error_msg = str(e)
+        # عرض الخطأ الحقيقي بوضوح على الشاشة لمعرفة سبب الفشل بدقة
+        st.error(f"❌ حدث خطأ أثناء تحليل الجلسة '{session_info.get('session_name')}':\n`{str(e)}`")
         err_tuple = (
-            ["❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة"],
-            ["❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة", "❌ تعذر القراءة"],
-            [f"❌ سبب الخطأ: {error_msg[:120]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
+            ["خطأ بالتحليل", "-", "-", "-", "-", "-", "-"],
+            ["خطأ بالتحليل", "-", "-", "-", "-", "-", "-"],
+            [f"خطأ: {str(e)[:100]}", "-", "-", "-", "-", "-", "-"]
         )
         session_info["cached_metrics"] = err_tuple
         return err_tuple
@@ -434,7 +422,7 @@ else:
                     if b2.button("2️⃣ مطابقة الحضور", key=f"b2_{p_name}"):
                         st.session_state[f"view_{p_name}"] = "matching"
                     if b3.button("3️⃣ إحصائية الفئات", key=f"b3_{p_name}"):
-                        st.session_state[p_name] = "stats" # corrected key below
+                        st.session_state[f"view_{p_name}"] = "stats"
                     if b4.button("4️⃣ سجل الفحص 📋", key=f"b4_{p_name}"):
                         st.session_state[f"view_{p_name}"] = "logs"
                     if b5.button("5️⃣ تقرير الفجوات 📊", key=f"b5_{p_name}"):
@@ -479,7 +467,7 @@ else:
 
                     elif current_view == "matching":
                         st.markdown("#### ⚖️ مطابقة المحتوى الفعلي لأوراق الحضور مع التقارير:")
-                        st.info("💡 تم فصل المعالجة لتكون عند الطلب لكل جلسة لضمان السرعة وعدم الضغط على الخادم.")
+                        st.info("💡 اضغط على زر **(🔄 إعادة مطابقة)** بجانب الجلسة التي تريد تحليلها.")
                         
                         if not GEMINI_API_KEY:
                             st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
@@ -490,8 +478,6 @@ else:
 
                             for s_idx, sess in enumerate(sessions_data):
                                 sess_title = sess.get("session_name", "جلسة")
-                                
-                                # تحقق هل تم تحليلها سابقاً ومخزنة مؤقتاً أم لا
                                 has_cached = "cached_metrics" in sess
                                 
                                 col_info, col_btn = st.columns([4, 1])
@@ -512,7 +498,6 @@ else:
                                         }
                                         save_scan_logs(all_logs)
                                 else:
-                                    # قراءة البيانات المخزنة مؤقتاً
                                     att_vals, rep_vals, diff_vals = sess["cached_metrics"]
 
                                 comparison_data = {
@@ -530,7 +515,7 @@ else:
                         st.markdown("#### 📂 سجل الفحص والمطابقة المحفوظ حسب المشروع والنشاط:")
                         all_logs = load_scan_logs()
                         if not all_logs or p_name not in all_logs or not all_logs[p_name]:
-                            st.info("💡 لا توجد سجلات فحص محفوظة لهذا المشروع حتى الآن. قم بالانتقال إلى (2️⃣ مطابقة الحضور) ليتم حفظ الفحوصات تلقائياً هنا.")
+                            st.info("💡 لا توجد سجلات فحص محفوظة لهذا المشروع حتى الآن.")
                         else:
                             project_logs = all_logs[p_name]
                             for sess_name, log_data in project_logs.items():
@@ -563,7 +548,6 @@ else:
                                         doc_files = s.get("documentation", {}).get("files", [])
                                         rep_files = s.get("report", {}).get("files", [])
                                         
-                                        # استخدام التحليل المخزن إن وجد أو فحصه سريعاً
                                         att_v, rep_v, diff_v = analyze_session_files_with_ai(service, s, GEMINI_API_KEY, force_refresh=False)
                                         
                                         gap_context += f"### المسار الكامل: {s_title}\n"
@@ -577,12 +561,7 @@ else:
                                     gap_prompt = (
                                         "أنت خبير محترف في المتابعة والتقييم (M&E) لمشاريع الإغاثة والتنمية.\n"
                                         "بناءً على بيانات الجلسات والمرفقات والفروقات المستخرجة للمشروع أدناه، قم إعداد "
-                                        "تقرير تحليل فجوات ومخاطر شامل ومهني باللغة العربية.\n"
-                                        "يجب أن يتضمن التقرير:\n"
-                                        "1. ملخص تنفيذي لحالة التوثيق والاكتمال في المشروع.\n"
-                                        "2. أبرز الفجوات والمشاكل العددية أو النقص في الملفات لكل جلسة.\n"
-                                        "3. تقييم المخاطر الميدانية والتوثيقية.\n"
-                                        "4. توصيات عملية وعاجلة لفريق المشروع لمعالجة هذه الفجوات.\n\n"
+                                        "تقرير تحليل فجوات ومخاطر شامل ومهني باللغة العربية.\n\n"
                                         f"بيانات المشروع:\n{gap_context}"
                                     )
 
@@ -590,12 +569,12 @@ else:
                                         client_g = genai.Client(api_key=GEMINI_API_KEY.strip())
                                         gap_res = call_gemini_with_retry(
                                             client=client_g,
-                                            model="gemini-3.5-flash",
+                                            model="gemini-2.5-flash",
                                             contents=gap_prompt
                                         )
                                         st.session_state[f"gap_report_{p_name}"] = gap_res.text
                                     except Exception as e:
-                                        st.error(f"❌ حدث خطأ أثناء توليد التقرير: {e}")
+                                        st.error(f"❌ حدث خطأ أثناء توليد تقرير الفجوات: {e}")
 
                             if f"gap_report_{p_name}" in st.session_state:
                                 st.markdown("---")
@@ -680,16 +659,14 @@ else:
                                             client = genai.Client(api_key=GEMINI_API_KEY.strip())
                                             response = call_gemini_with_retry(
                                                 client=client,
-                                                model="gemini-3.5-flash",
+                                                model="gemini-2.5-flash",
                                                 contents=ai_prompt
                                             )
                                             ai_response = response.text
                                             st.write(ai_response)
                                             st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
-                                        except ClientError as ce:
-                                            st.error(f"❌ خطأ الحصة/الخادم (كود {getattr(ce, 'code', '429')}): تم استنفاد الحد المسموح للطلبات مؤقتاً. يرجى الانتظار قليلاً.")
                                         except Exception as e:
-                                            st.error(f"❌ حدث خطأ غير متوقع: {e}")
+                                            st.error(f"❌ حدث خطأ في المحادثة: {e}")
 
 st.markdown("---")
 st.markdown(
