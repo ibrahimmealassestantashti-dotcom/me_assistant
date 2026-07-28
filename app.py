@@ -253,7 +253,7 @@ def analyze_session_files_with_ai(service, session_info, api_key):
             prompt.append(uf)
 
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
         )
         
@@ -643,7 +643,7 @@ else:
                                         try:
                                             client = genai.Client(api_key=GEMINI_API_KEY.strip())
                                             response = client.models.generate_content(
-                                                model="gemini-2.0-flash",
+                                                model="gemini-1.5-flash",
                                                 contents=ai_prompt,
                                             )
                                             ai_response = response.text
