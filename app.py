@@ -3,13 +3,11 @@ import json
 import os
 import time
 import io
-import tempfile
 import re
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-from google import genai
-from google.genai.errors import ClientError
+from groq import Groq
 
 st.set_page_config(
     page_title="مساعد إدارة ومتابعة المشاريع - ME Assistant",
@@ -203,63 +201,56 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         session_info["cached_metrics"] = error_result
         return error_result
 
-    client = genai.Client(api_key=api_key.strip())
-    uploaded_gemini_files = []
-    
     try:
+        client = Groq(api_key=api_key.strip())
+        files_text_content = ""
+        
         for f in att_files:
             b = get_file_content_bytes(service, f["id"], f["mimeType"])
             if b:
-                suffix = ".pdf" if "pdf" in f["mimeType"] else (".png" if "image" in f["mimeType"] else ".txt")
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(b)
-                    tmp_path = tmp.name
-                up_file = client.files.upload(file=tmp_path)
-                uploaded_gemini_files.append(up_file)
                 try:
-                    os.unlink(tmp_path)
+                    text_content = b.decode('utf-8', errors='ignore')
                 except:
-                    pass
+                    text_content = "[محتوى ثنائي]"
+                files_text_content += f"\n--- محتوى ملف الحضور ({f['name']}) ---\n{text_content}\n"
 
         for f in rep_files:
             b = get_file_content_bytes(service, f["id"], f["mimeType"])
             if b:
-                suffix = ".pdf" if "pdf" in f["mimeType"] else (".docx" if "document" in f["mimeType"] else ".txt")
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(b)
-                    tmp_path = tmp.name
-                up_file = client.files.upload(file=tmp_path)
-                uploaded_gemini_files.append(up_file)
                 try:
-                    os.unlink(tmp_path)
+                    text_content = b.decode('utf-8', errors='ignore')
                 except:
-                    pass
+                    text_content = "[محتوى ثنائي]"
+                files_text_content += f"\n--- محتوى التقرير ({f['name']}) ---\n{text_content}\n"
 
-        if not uploaded_gemini_files:
+        if not files_text_content.strip():
             session_info["cached_metrics"] = error_result
             return error_result
 
-        prompt = [
-            "أنت مدقق ومراجع دقيق لمستندات المشاريع والمخيمات.",
-            "قم بقراءة محتوى الملفات المرفقة فعلياً (أوراق الحضور وتقارير الإنجاز) واستخرج القيم الحقيقية بدقة تامة.",
-            "تحذير صارم: يمنع منعاً باتاً افتراض أو تخمين أي أرقام أو وضع أصفار إذا كانت البيانات ناقصة أو غير واضحة. إذا وجد نقص أو تعذر القراءة، يجب كتابة عبارات صريحة تدل على الخطأ مثل '❌ خطأ/غير واضح'.",
-            "قم بمقارنة أوراق الحضور مع التقرير لكل بند بدقة تامة واكتب نتيجة المقارنة (مثلاً: مطابق، أو وجود فرق محدد).",
-            "أجب بصيغة JSON صارمة فقط بالشكل التالي ودون أي نصوص إضافية:",
+        prompt = (
+            "أنت مدقق ومراجع دقيق لمستندات المشاريع والمخيمات.\n"
+            "قم بقراءة محتوى الملفات المستخرجة أدناه (أوراق الحضور وتقارير الإنجاز) واستخرج القيم الحقيقية بدقة تامة.\n"
+            "تحذير صارم: يمنع منعاً باتاً افتراض أو تخمين أي أرقام أو وضع أصفار إذا كانت البيانات ناقصة أو غير واضحة. إذا وجد نقص أو تعذر القراءة، اكتب عبارات صريحة مثل '❌ خطأ/غير واضح'.\n"
+            "قم بمقارنة أوراق الحضور مع التقرير لكل بند بدقة تامة واكتب نتيجة المقارنة (مثلاً: مطابق، أو وجود فرق محدد).\n"
+            "أجب بصيغة JSON صارمة فقط بالشكل التالي دون أي نصوص إضافية أو علامات ماركداون:\n"
             "{\n"
             '  "attendance_data": ["التاريخ", "الإجمالي", "رجال", "نساء", "أطفال ذكور", "فتيات", "ذوي احتياجات"],\n'
             '  "report_data": ["التاريخ", "الإجمالي", "رجال", "نساء", "أطفال ذكور", "فتيات", "ذوي احتياجات"],\n'
             '  "differences": ["النتيجة للبند 1", "النتيجة للبند 2", "النتيجة للبند 3", "النتيجة للبند 4", "النتيجة للبند 5", "النتيجة للبند 6", "النتيجة للبند 7"]\n'
-            "}"
-        ]
-        for uf in uploaded_gemini_files:
-            prompt.append(uf)
+            "}\n\n"
+            f"الملفات:\n{files_text_content}"
+        )
 
-        response = client.models.generate_content(
-            model="gemini-3.5-flash",
-            contents=prompt,
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "أنت نظام استخراج بيانات وتحليل نصي دقيق، تعيد الرد بصيغة JSON صحيحة وقياسية فقط."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1
         )
         
-        text_res = response.text
+        text_res = completion.choices[0].message.content
         cleaned = text_res.replace("```json", "").replace("```", "").strip()
         data = json.loads(cleaned)
         
@@ -271,15 +262,6 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         session_info["cached_metrics"] = result
         return result
 
-    except ClientError as ce:
-        error_msg = f"ClientError ({ce.code}): {str(ce)}"
-        err_tuple = (
-            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
-            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
-            [f"❌ {error_msg[:100]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
-        )
-        session_info["cached_metrics"] = err_tuple
-        return err_tuple
     except Exception as e:
         error_msg = str(e)
         err_tuple = (
@@ -289,12 +271,6 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         )
         session_info["cached_metrics"] = err_tuple
         return err_tuple
-    finally:
-        for uf in uploaded_gemini_files:
-            try:
-                client.files.delete(name=uf.name)
-            except:
-                pass
 
 # --- الواجهة الرئيسية ---
 st.title("📊 نظام إدارة ومتابعة المشاريع الذكي (ME Assistant)")
@@ -306,8 +282,8 @@ if "projects" not in st.session_state:
 with st.sidebar:
     st.header("⚙️ إعدادات النظام والمشاريع")
     
-    default_api_key = st.secrets.get("GEMINI_API_KEY", "")
-    GEMINI_API_KEY = st.text_input("مفتاح Gemini API أو رمز المصادقة:", value=default_api_key, type="password")
+    default_groq_key = "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"
+    GROQ_API_KEY = st.text_input("مفتاح Groq API:", value=default_groq_key, type="password")
     
     st.markdown("---")
     st.subheader("إضافة مشروع جديد")
@@ -336,8 +312,8 @@ with st.sidebar:
 
 service = get_drive_service()
 
-if not GEMINI_API_KEY:
-    st.warning("⚠️ الرجاء إدخال مفتاح الذكاء الاصطناعي في الشريط الجانبي لتفعيل التحليل وقراءة محتوى الملفات.")
+if not GROQ_API_KEY:
+    st.warning("⚠️ الرجاء إدخال مفتاح Groq API في الشريط الجانبي لتفعيل التحليل.")
 
 if not st.session_state.projects:
     st.info("👈 قم بإضافة أول مشروع من الشريط الجانبي وسيبقى محفوظاً دائماً.")
@@ -458,8 +434,8 @@ else:
 
                     elif current_view == "matching":
                         st.markdown("#### ⚖️ مطابقة المحتوى الفعلي (إجراء يدوي لكل جلسة على حدة):")
-                        if not GEMINI_API_KEY:
-                            st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
+                        if not GROQ_API_KEY:
+                            st.error("يرجى إدخال مفتاح Groq API في الشريط الجانبي أولاً.")
                         else:
                             all_logs = load_scan_logs()
                             if p_name not in all_logs:
@@ -476,7 +452,7 @@ else:
                                 
                                 if col_m2.button(btn_label, key=f"match_btn_{p_name}_{idx_s}"):
                                     with st.spinner(f"جاري تحليل ملفات جلسة: {sess_title}..."):
-                                        att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GEMINI_API_KEY)
+                                        att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GROQ_API_KEY)
                                         
                                         all_logs[p_name][sess_title] = {
                                             "attendance": att_vals,
@@ -527,8 +503,8 @@ else:
 
                     elif current_view == "gap_analysis":
                         st.markdown("#### 📊 تقرير تحليل الفجوات والمخاطر التلقائي للمشروع:")
-                        if not GEMINI_API_KEY:
-                            st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
+                        if not GROQ_API_KEY:
+                            st.error("يرجى إدخال مفتاح Groq API في الشريط الجانبي أولاً.")
                         else:
                             if st.button("🚀 توليد تقرير الفجوات الشامل بالذكاء الاصطناعي", key=f"gen_gap_{p_name}"):
                                 with st.spinner("جاري تحليل كافة جلسات ومرفقات المشروع وإعداد تقرير الفجوات التلقائي..."):
@@ -538,7 +514,7 @@ else:
                                         att_files = s.get("attendance", {}).get("files", [])
                                         doc_files = s.get("documentation", {}).get("files", [])
                                         rep_files = s.get("report", {}).get("files", [])
-                                        att_v, rep_v, diff_v = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
+                                        att_v, rep_v, diff_v = analyze_session_files_with_ai(service, s, GROQ_API_KEY)
                                         
                                         gap_context += f"### المسار الكامل: {s_title}\n"
                                         gap_context += f"- مرفقات الحضور: {'موجودة (' + str(len(att_files)) + ')' if att_files else 'مفقودة ❌'}\n"
@@ -550,7 +526,7 @@ else:
 
                                     gap_prompt = (
                                         "أنت خبير محترف في المتابعة والتقييم (M&E) لمشاريع الإغاثة والتنمية.\n"
-                                        "بناءً على بيانات الجلسات والمرفقات والفروقات المستخرجة للمشروع أدناه، قم إعداد "
+                                        "بناءً على بيانات الجلسات والمرفقات والفروقات المستخرجة للمشروع أدناه، قم بإعداد "
                                         "تقرير تحليل فجوات ومخاطر شامل ومهني باللغة العربية.\n"
                                         "يجب أن يتضمن التقرير:\n"
                                         "1. ملخص تنفيذي لحالة التوثيق والاكتمال في المشروع.\n"
@@ -561,12 +537,16 @@ else:
                                     )
 
                                     try:
-                                        client_g = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                        gap_res = client_g.models.generate_content(
-                                            model="gemini-3.5-flash",
-                                            contents=gap_prompt
+                                        client_g = Groq(api_key=GROQ_API_KEY.strip())
+                                        gap_res = client_g.chat.completions.create(
+                                            model="llama-3.3-70b-versatile",
+                                            messages=[
+                                                {"role": "system", "content": "أنت خبير متميز في تقييم المشاريع الإنسانية والتنموية."},
+                                                {"role": "user", "content": gap_prompt}
+                                            ],
+                                            temperature=0.3
                                         )
-                                        st.session_state[f"gap_report_{p_name}"] = gap_res.text
+                                        st.session_state[f"gap_report_{p_name}"] = gap_res.choices[0].message.content
                                     except Exception as e:
                                         st.error(f"❌ حدث خطأ أثناء توليد التقرير: {e}")
 
@@ -577,14 +557,14 @@ else:
                     elif current_view == "stats":
                         st.markdown("#### 📊 إحصائية المستفيدين لكل جلسة على حدة بناءً على محتوى الملفات الحقيقي:")
                         
-                        if not GEMINI_API_KEY:
-                            st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
+                        if not GROQ_API_KEY:
+                            st.error("يرجى إدخال مفتاح Groq API في الشريط الجانبي أولاً.")
                         else:
                             tot_men_all, tot_women_all, tot_boys_all, tot_girls_all, tot_pwd_all = 0, 0, 0, 0, 0
                             
                             for s in sessions_data:
                                 sess_title = s.get("session_name", "جلسة بدون عنوان")
-                                att_v, _, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
+                                att_v, _, _ = analyze_session_files_with_ai(service, s, GROQ_API_KEY)
                                 
                                 s_men = extract_number(att_v[2])
                                 s_women = extract_number(att_v[3])
@@ -619,8 +599,8 @@ else:
                         st.markdown("---")
                         st.subheader("💬 دردشة المساعد الذكي لمراجعة محتوى الجلسات")
 
-                        if not GEMINI_API_KEY:
-                            st.error("يرجى إدخال مفتاح الذكاء الاصطناعي في الشريط الجانبي لتفعيل المحادثة.")
+                        if not GROQ_API_KEY:
+                            st.error("يرجى إدخال مفتاح Groq API في الشريط الجانبي لتفعيل المحادثة.")
                         else:
                             chat_history_key = f"messages_{p_name}"
                             if chat_history_key not in st.session_state:
@@ -640,7 +620,7 @@ else:
                                 
                                 for s in sessions_data:
                                     s_title = s.get('session_name', '')
-                                    att_v, rep_v, _ = analyze_session_files_with_ai(service, s, GEMINI_API_KEY)
+                                    att_v, rep_v, _ = analyze_session_files_with_ai(service, s, GROQ_API_KEY)
                                     context_text += f"- {s_title}:\n"
                                     context_text += f"  * الحضور المستخلص: {att_v}\n"
                                     context_text += f"  * التقرير المستخلص: {rep_v}\n"
@@ -648,18 +628,16 @@ else:
                                 with st.chat_message("assistant"):
                                     with st.spinner("جاري التفكير..."):
                                         try:
-                                            client_chat = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                            chat_prompt = [
-                                                "أنت مساعد ذكي متخصص في إدارة ومتابعة مشاريع التنمية والإغاثة.",
-                                                f"معلومات المشروع والسياق:\n{context_text}",
-                                                f"سؤال المستخدم: {prompt_text}",
-                                                "أجب بلغة عربية واضحة، دقيقة، ومفيدة بناءً على البيانات المقدمة فقط."
-                                            ]
-                                            response = client_chat.models.generate_content(
-                                                model="gemini-3.5-flash",
-                                                contents=chat_prompt
+                                            client_chat = Groq(api_key=GROQ_API_KEY.strip())
+                                            completion = client_chat.chat.completions.create(
+                                                model="llama-3.3-70b-versatile",
+                                                messages=[
+                                                    {"role": "system", "content": "أنت مساعد ذكي متخصص في إدارة ومتابعة مشاريع التنمية والإغاثة."},
+                                                    {"role": "user", "content": f"معلومات المشروع والسياق:\n{context_text}\n\nسؤال المستخدم: {prompt_text}\nأجب بلغة عربية واضحة ودقيقة بناءً على البيانات المقدمة فقط."}
+                                                ],
+                                                temperature=0.3
                                             )
-                                            answer = response.text
+                                            answer = completion.choices[0].message.content
                                             st.write(answer)
                                             st.session_state[chat_history_key].append({"role": "assistant", "content": answer})
                                         except Exception as e:
