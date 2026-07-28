@@ -99,7 +99,6 @@ def is_sub_component(name):
     return any(kw in name_lower for kw in all_kw)
 
 def categorize_files_smart(service, session_folder):
-    """فحص كامل ومزدوج لجميع المجلدات والملفات الفرعية والمباشرة"""
     sub_folders, direct_files = get_folder_contents(service, session_folder["id"])
     
     session_data = {
@@ -193,7 +192,7 @@ def extract_number(text):
     return int(match.group()) if match else 0
 
 def analyze_session_inline(service, session_info, api_key, model_choice="gemini-2.5-flash"):
-    """تجميع كافة ملفات الجلسة وإرسالها للنموذج المختار مباشرة"""
+    """تحليل الجلسات مع نظام التبديل التلقائي لمنع خطأ 404"""
     all_files_dict = {}
     
     for category in ["attendance", "report", "documentation"]:
@@ -234,7 +233,6 @@ def analyze_session_inline(service, session_info, api_key, model_choice="gemini-
 
     contents = [prompt_instruction]
 
-    # تحميل وقراءة كافة الملفات المتاحة
     for f in all_files:
         b_data, m_type = get_file_bytes_and_mime(service, f["id"], f["mimeType"])
         if b_data and m_type:
@@ -246,33 +244,46 @@ def analyze_session_inline(service, session_info, api_key, model_choice="gemini-
     if len(contents) == 1:
         return error_result
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model=model_choice,
-                contents=contents,
-            )
-            text_res = response.text
-            cleaned = text_res.replace("```json", "").replace("```", "").strip()
-            data = json.loads(cleaned)
-            
-            return (
-                data.get("attendance_data", error_result[0]),
-                data.get("report_data", error_result[1]),
-                data.get("differences", error_result[2])
-            )
-        except Exception as e:
-            err_msg = str(e)
-            if ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg) and attempt < max_retries - 1:
-                time.sleep(10 * (attempt + 1))
-                continue
-            else:
-                return (
-                    ["❌ خطأ API"] * 7,
-                    ["❌ خطأ API"] * 7,
-                    [f"❌ {err_msg[:80]}"] + ["❌ خطأ"] * 6
+    # قائمة النماذج البديلة في حال حدوث خطأ 404 من Google
+    models_to_try = [model_choice, "gemini-1.5-flash", "gemini-2.0-flash", "gemini-2.5-flash"]
+    # إزالة التكرار مع الحفاظ على الترتيب
+    models_to_try = list(dict.fromkeys(models_to_try))
+
+    last_error_msg = ""
+    for current_model in models_to_try:
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model=current_model,
+                    contents=contents,
                 )
+                text_res = response.text
+                cleaned = text_res.replace("```json", "").replace("```", "").strip()
+                data = json.loads(cleaned)
+                
+                return (
+                    data.get("attendance_data", error_result[0]),
+                    data.get("report_data", error_result[1]),
+                    data.get("differences", error_result[2])
+                )
+            except Exception as e:
+                err_msg = str(e)
+                last_error_msg = err_msg
+                # إذا كان الخطأ 404 تجرّب مباشرة النموذج التالي في القائمة
+                if "404" in err_msg or "NOT_FOUND" in err_msg:
+                    break
+                elif ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg) and attempt < max_retries - 1:
+                    time.sleep(5)
+                    continue
+                else:
+                    break
+
+    return (
+        ["❌ خطأ API"] * 7,
+        ["❌ خطأ API"] * 7,
+        [f"❌ {last_error_msg[:80]}"] + ["❌ خطأ"] * 6
+    )
 
 # --- الواجهة الرئيسية ---
 st.title("📊 نظام إدارة ومتابعة المشاريع الذكي (ME Assistant)")
@@ -286,10 +297,9 @@ with st.sidebar:
     default_api_key = st.secrets.get("GEMINI_API_KEY", "")
     GEMINI_API_KEY = st.text_input("مفتاح Gemini API:", value=default_api_key, type="password")
     
-    # اختيار نموذج الذكاء الاصطناعي
     selected_model = st.selectbox(
-        "اختر إصدار النموذج:",
-        ["gemini-2.5-flash", "gemini-3.5-flash"],
+        "اختر إصدار النموذج المفضّل:",
+        ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"],
         index=0
     )
     
@@ -421,7 +431,7 @@ else:
                                     if not extra_files: st.caption("لا يوجد")
 
                     elif current_view == "matching":
-                        st.markdown(f"#### ⚖️ مطابقة المحتوى الفعلي باستخدام نموذج ({selected_model}):")
+                        st.markdown(f"#### ⚖️ مطابقة المحتوى الفعلي عبر الذكاء الاصطناعي:")
                         all_logs = load_scan_logs()
                         if p_name not in all_logs: all_logs[p_name] = {}
 
@@ -437,7 +447,7 @@ else:
                             for i, sess in enumerate(sessions_data):
                                 sess_title = sess.get("session_name", "جلسة")
                                 
-                                st.write(f"جاري قراءة وتحليل ملفات: **{sess_title}** بواسطة {selected_model}...")
+                                st.write(f"جاري قراءة وتحليل ملفات: **{sess_title}**...")
                                 att_vals, rep_vals, diff_vals = analyze_session_inline(
                                     service, sess, GEMINI_API_KEY, model_choice=selected_model
                                 )
