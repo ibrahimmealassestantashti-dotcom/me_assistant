@@ -561,7 +561,7 @@ else:
                                     try:
                                         client_g = genai.Client(api_key=GEMINI_API_KEY.strip())
                                         gap_res = client_g.models.generate_content(
-                                            model="gemini-2.0-flash",
+                                            model="gemini-3.5-flash",
                                             contents=gap_prompt
                                         )
                                         st.session_state[f"gap_report_{p_name}"] = gap_res.text
