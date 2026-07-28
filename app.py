@@ -254,7 +254,7 @@ def analyze_session_files_with_ai(service, session_info, api_key):
             prompt.append(uf)
 
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
         )
         
@@ -548,7 +548,7 @@ else:
                                     try:
                                         client_g = genai.Client(api_key=GEMINI_API_KEY.strip())
                                         gap_res = client_g.models.generate_content(
-                                            model="gemini-2.0-flash",
+                                            model="gemini-2.5-flash",
                                             contents=gap_prompt
                                         )
                                         st.session_state[f"gap_report_{p_name}"] = gap_res.text
