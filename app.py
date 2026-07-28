@@ -186,6 +186,23 @@ def extract_number(text):
     match = re.search(r'\d+', str(text))
     return int(match.group()) if match else 0
 
+def call_gemini_with_retry(client, model, contents, max_retries=4, initial_delay=3):
+    """دالة مساعدة لإرسال الطلبات لنموذج جيميناي مع إعادة المحاولة تلقائياً عند حدوث ضغط 503"""
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(model=model, contents=contents)
+        except ClientError as ce:
+            if getattr(ce, "code", None) == 503 and attempt < max_retries - 1:
+                time.sleep(initial_delay * (2 ** attempt))
+                continue
+            raise ce
+        except Exception as e:
+            if "503" in str(e) and attempt < max_retries - 1:
+                time.sleep(initial_delay * (2 ** attempt))
+                continue
+            raise e
+    raise Exception("فشلت المحاولات بسبب استمرار الضغط العالي على الخادم (503).")
+
 def analyze_session_files_with_ai(service, session_info, api_key):
     if "cached_metrics" in session_info:
         return session_info["cached_metrics"]
@@ -254,9 +271,10 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         for uf in uploaded_gemini_files:
             prompt.append(uf)
 
-        response = client.models.generate_content(
+        response = call_gemini_with_retry(
+            client=client,
             model="gemini-3.5-flash",
-            contents=prompt,
+            contents=prompt
         )
         
         text_res = response.text
@@ -272,11 +290,11 @@ def analyze_session_files_with_ai(service, session_info, api_key):
         return result
 
     except ClientError as ce:
-        error_msg = f"ClientError ({ce.code}): {str(ce)}"
+        error_msg = f"ClientError ({getattr(ce, 'code', '503')}): {str(ce)}"
         err_tuple = (
-            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
-            ["❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API", "❌ خطأ API"],
-            [f"❌ {error_msg[:100]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
+            ["❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم"],
+            ["❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم", "❌ خطأ ضغط الخادم"],
+            [f"❌ {error_msg[:120]}", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ", "❌ خطأ"]
         )
         session_info["cached_metrics"] = err_tuple
         return err_tuple
@@ -548,7 +566,8 @@ else:
 
                                     try:
                                         client_g = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                        gap_res = client_g.models.generate_content(
+                                        gap_res = call_gemini_with_retry(
+                                            client=client_g,
                                             model="gemini-3.5-flash",
                                             contents=gap_prompt
                                         )
@@ -637,15 +656,20 @@ else:
                                         
                                         try:
                                             client = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                            interaction = client.interactions.create(
+                                            # استخدام إعادة المحاولة للدردشة أيضاً
+                                            class DummyInteraction:
+                                                pass
+                                            
+                                            response = call_gemini_with_retry(
+                                                client=client,
                                                 model="gemini-3.5-flash",
-                                                input=ai_prompt,
+                                                contents=ai_prompt
                                             )
-                                            ai_response = interaction.output_text
+                                            ai_response = response.text
                                             st.write(ai_response)
                                             st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
                                         except ClientError as ce:
-                                            st.error(f"❌ خطأ حد الاستخدام في الخطة المجانية (كود {ce.code}): يرجى الانتظار دقيقة ثم إعادة المحاولة.")
+                                            st.error(f"❌ خطأ الخادم (كود {getattr(ce, 'code', '503')}): الخادم يواجه ضغطاً حالياً. يرجى الانتظار قليلاً وإعادة المحاولة.")
                                         except Exception as e:
                                             st.error(f"❌ حدث خطأ غير متوقع: {e}")
 
