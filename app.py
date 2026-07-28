@@ -457,7 +457,7 @@ else:
                                         st.error("❌ التقرير مفقود")
 
                     elif current_view == "matching":
-                        st.markdown("#### ⚖️ مطابقة المحتوى الفعلي لأوراق الحضور مع التقارير:")
+                        st.markdown("#### ⚖️ مطابقة المحتوى الفعلي (إجراء يدوي لكل جلسة على حدة):")
                         if not GEMINI_API_KEY:
                             st.error("يرجى إدخال مفتاح Gemini API في الشريط الجانبي أولاً.")
                         else:
@@ -465,41 +465,55 @@ else:
                             if p_name not in all_logs:
                                 all_logs[p_name] = {}
 
-                            for sess in sessions_data:
-                                sess_title = sess.get("session_name", "جلسة")
-                                att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GEMINI_API_KEY)
+                            for idx_s, sess in enumerate(sessions_data):
+                                sess_title = sess.get("session_name", f"جلسة {idx_s+1}")
                                 
-                                all_logs[p_name][sess_title] = {
-                                    "attendance": att_vals,
-                                    "report": rep_vals,
-                                    "differences": diff_vals,
-                                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-                                }
+                                col_m1, col_m2 = st.columns([3, 1])
+                                col_m1.markdown(f"📌 **المسار:** `\u200e{sess_title}\u200f`")
+                                
+                                has_logged = sess_title in all_logs[p_name]
+                                btn_label = "🔄 إعادة مطابقة" if has_logged else "⚡ مطابقة الجلسة"
+                                
+                                if col_m2.button(btn_label, key=f"match_btn_{p_name}_{idx_s}"):
+                                    with st.spinner(f"جاري تحليل ملفات جلسة: {sess_title}..."):
+                                        att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GEMINI_API_KEY)
+                                        
+                                        all_logs[p_name][sess_title] = {
+                                            "attendance": att_vals,
+                                            "report": rep_vals,
+                                            "differences": diff_vals,
+                                            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                                        }
+                                        save_scan_logs(all_logs)
+                                        st.success(f"تمت مطابقة وحفظ جلسة {sess_title} بنجاح!")
+                                        st.rerun()
 
-                                comparison_data = {
-                                    "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
-                                    "ورقة الحضور (محتوى الملف)": att_vals,
-                                    "التقرير (محتوى الملف)": rep_vals,
-                                    "حالة التدقيق / الفروقات": diff_vals
-                                }
-                                with st.expander(f"🔍 المسار الكامل: \u200e{sess_title}\u200f"):
-                                    st.table(comparison_data)
-
-                            save_scan_logs(all_logs)
-                            st.success("💾 تم حفظ نتائج المطابقة والفحص في 'سجل الفحص' بنجاح!")
+                                if has_logged:
+                                    log_entry = all_logs[p_name][sess_title]
+                                    comparison_data = {
+                                        "البند": ["تاريخ الجلسة", "العدد الإجمالي", "رجال (Men)", "نساء (Women)", "أطفال ذكور", "فتيات", "ذوي الاحتياجات (PWD)"],
+                                        "ورقة الحضور (محتوى الملف)": log_entry.get("attendance", []),
+                                        "التقرير (محتوى الملف)": log_entry.get("report", []),
+                                        "حالة التدقيق / الفروقات": log_entry.get("differences", [])
+                                    }
+                                    with st.expander(f"📋 عرض نتيجة المطابقة المحفوظة لـ: {sess_title}"):
+                                        st.table(comparison_data)
+                                else:
+                                    st.caption("⏳ لم يتم تنفيذ المطابقة لهذه الجلسة بعد. اضغط على زر المطابقة أعلاه.")
+                                st.markdown("---")
 
                     elif current_view == "logs":
                         st.markdown("#### 📂 سجل الفحص والمطابقة المحفوظ حسب المشروع والنشاط:")
                         all_logs = load_scan_logs()
                         if not all_logs or p_name not in all_logs or not all_logs[p_name]:
-                            st.info("💡 لا توجد سجلات فحص محفوظة لهذا المشروع حتى الآن. قم بالانتقال إلى (2️⃣ مطابقة الحضور) ليتم حفظ الفحوصات تلقائياً هنا.")
+                            st.info("💡 لا توجد سجلات فحص محفوظة لهذا المشروع حتى الآن. قم بالانتقال إلى (2️⃣ مطابقة الحضور) واضغط على زر المطابقة لأي جلسة ليتم حفظها هنا.")
                         else:
                             project_logs = all_logs[p_name]
                             for sess_name, log_data in project_logs.items():
                                 expander_title = f"📌 المسار الكامل: \u200e{sess_name}\u200f 🕒 (آخر فحص: \u200e{log_data.get('timestamp', 'غير معروف')}\u200f)"
                                 with st.expander(expander_title):
                                     saved_comp_data = {
-                                        "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
+                                        "البند": ["تاريخ الجلسة", "العدد الإجمالي", "رجال (Men)", "نساء (Women)", "أطفال ذكور (Boys)", "فتيات (Girls)", "ذوي الاحتياجات (PWD)"],
                                         "ورقة الحضور": log_data.get("attendance", []),
                                         "التقرير": log_data.get("report", []),
                                         "حالة التدقيق / الفروقات": log_data.get("differences", [])
@@ -632,27 +646,23 @@ else:
                                     context_text += f"  * التقرير المستخلص: {rep_v}\n"
 
                                 with st.chat_message("assistant"):
-                                    with st.spinner("جاري تحليل ومراجعة محتوى الملفات والإجابة..."):
-                                        ai_prompt = f"أنت مساعد ذكي مدقق لمشاريع المتابعة والتقييم.\nأجب باللغة العربية بناءً على محتوى الملفات الحقيقي المستخلص:\n{context_text}\nسؤال المستخدم: {prompt_text}"
-                                        
+                                    with st.spinner("جاري التفكير..."):
                                         try:
-                                            client = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                            interaction = client.interactions.create(
+                                            client_chat = genai.Client(api_key=GEMINI_API_KEY.strip())
+                                            chat_prompt = [
+                                                "أنت مساعد ذكي متخصص في إدارة ومتابعة مشاريع التنمية والإغاثة.",
+                                                f"معلومات المشروع والسياق:\n{context_text}",
+                                                f"سؤال المستخدم: {prompt_text}",
+                                                "أجب بلغة عربية واضحة، دقيقة، ومفيدة بناءً على البيانات المقدمة فقط."
+                                            ]
+                                            response = client_chat.models.generate_content(
                                                 model="gemini-3.5-flash",
-                                                input=ai_prompt,
+                                                contents=chat_prompt
                                             )
-                                            ai_response = interaction.output_text
-                                            st.write(ai_response)
-                                            st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
-                                        except ClientError as ce:
-                                            st.error(f"❌ خطأ حد الاستخدام في الخطة المجانية (كود {ce.code}): يرجى الانتظار دقيقة ثم إعادة المحاولة.")
+                                            answer = response.text
+                                            st.write(answer)
+                                            st.session_state[chat_history_key].append({"role": "assistant", "content": answer})
                                         except Exception as e:
-                                            st.error(f"❌ حدث خطأ غير متوقع: {e}")
-
-st.markdown("---")
-st.markdown(
-    "<div style='text-align: center; color: #888888; padding: 10px;'>"
-    "تم تصميم وتطوير البرنامج بواسطة <b>إبراهيم الجاسم</b> © 2026"
-    "</div>", 
-    unsafe_allow_html=True
-)
+                                            err_msg = f"❌ حدث خطأ أثناء الاتصال بالمساعد الذكي: {e}"
+                                            st.error(err_msg)
+                                            st.session_state[chat_history_key].append({"role": "assistant", "content": err_msg})
