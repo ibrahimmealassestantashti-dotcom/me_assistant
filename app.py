@@ -204,7 +204,8 @@ def analyze_session_files_with_ai(service, session_info, api_key):
     try:
         client = Groq(api_key=api_key.strip())
         files_text_content = ""
-        
+        MAX_FILE_CHARS = 6000  # الحد الأقصى للحروف لكل ملف لمنع تجاوز الـ Tokens
+
         for f in att_files:
             b = get_file_content_bytes(service, f["id"], f["mimeType"])
             if b:
@@ -212,6 +213,10 @@ def analyze_session_files_with_ai(service, session_info, api_key):
                     text_content = b.decode('utf-8', errors='ignore')
                 except:
                     text_content = "[محتوى ثنائي]"
+                
+                if len(text_content) > MAX_FILE_CHARS:
+                    text_content = text_content[:MAX_FILE_CHARS] + "\n[... تم اقتطاع باقي الملف لتجاوزه الحد المسموح ...]"
+                
                 files_text_content += f"\n--- محتوى ملف الحضور ({f['name']}) ---\n{text_content}\n"
 
         for f in rep_files:
@@ -221,6 +226,10 @@ def analyze_session_files_with_ai(service, session_info, api_key):
                     text_content = b.decode('utf-8', errors='ignore')
                 except:
                     text_content = "[محتوى ثنائي]"
+                
+                if len(text_content) > MAX_FILE_CHARS:
+                    text_content = text_content[:MAX_FILE_CHARS] + "\n[... تم اقتطاع باقي الملف لتجاوزه الحد المسموح ...]"
+                
                 files_text_content += f"\n--- محتوى التقرير ({f['name']}) ---\n{text_content}\n"
 
         if not files_text_content.strip():
@@ -451,6 +460,10 @@ else:
                                 btn_label = "🔄 إعادة مطابقة" if has_logged else "⚡ مطابقة الجلسة"
                                 
                                 if col_m2.button(btn_label, key=f"match_btn_{p_name}_{idx_s}"):
+                                    # مسح الكاش القديم لتلك الجلسة لإجبار إعادة التحليل بالنص المقطوع الآمن
+                                    if "cached_metrics" in sess:
+                                        del sess["cached_metrics"]
+                                        
                                     with st.spinner(f"جاري تحليل ملفات جلسة: {sess_title}..."):
                                         att_vals, rep_vals, diff_vals = analyze_session_files_with_ai(service, sess, GROQ_API_KEY)
                                         
@@ -526,7 +539,7 @@ else:
 
                                     gap_prompt = (
                                         "أنت خبير محترف في المتابعة والتقييم (M&E) لمشاريع الإغاثة والتنمية.\n"
-                                        "بناءً على بيانات الجلسات والمرفقات والفروقات المستخرجة للمشروع أدناه، قم بإعداد "
+                                        "بناءً على بيانات الجلسات والمرفقات والفروقات المستخرجة للمشروع أدناه، قم إعداد "
                                         "تقرير تحليل فجوات ومخاطر شامل ومهني باللغة العربية.\n"
                                         "يجب أن يتضمن التقرير:\n"
                                         "1. ملخص تنفيذي لحالة التوثيق والاكتمال في المشروع.\n"
