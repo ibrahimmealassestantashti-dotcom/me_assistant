@@ -1,8 +1,6 @@
 streamlit
-pandas
-python-docx
-openai
+google-generativeai
 google-api-python-client
 google-auth
-google-genai
-groq
+google-auth-httplib2
+google-auth-oauthlib
