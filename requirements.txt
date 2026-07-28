@@ -5,4 +5,4 @@ openai
 google-api-python-client
 google-auth
 google-genai
-pip install groq
+groq
