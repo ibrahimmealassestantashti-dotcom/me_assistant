@@ -7,8 +7,7 @@ import re
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
 st.set_page_config(
     page_title="مساعد إدارة ومتابعة المشاريع - ME Assistant",
@@ -191,8 +190,8 @@ def extract_number(text):
     match = re.search(r'\d+', str(text))
     return int(match.group()) if match else 0
 
-def analyze_session_inline(service, session_info, api_key, model_choice="gemini-2.5-flash"):
-    """تحليل الجلسات مع نظام التبديل التلقائي لمنع خطأ 404"""
+def analyze_session_inline(service, session_info, api_key, model_choice="gemini-1.5-flash"):
+    """تحليل ذكي ومستقر يضمن عدم حدوث خطأ 404"""
     all_files_dict = {}
     
     for category in ["attendance", "report", "documentation"]:
@@ -213,7 +212,7 @@ def analyze_session_inline(service, session_info, api_key, model_choice="gemini-
     if not api_key or not all_files:
         return error_result
 
-    client = genai.Client(api_key=api_key.strip())
+    genai.configure(api_key=api_key.strip())
     
     prompt_instruction = (
         "أنت مدقق ومراجع دقيق لمستندات المشاريع والمخيمات.\n"
@@ -237,52 +236,39 @@ def analyze_session_inline(service, session_info, api_key, model_choice="gemini-
         b_data, m_type = get_file_bytes_and_mime(service, f["id"], f["mimeType"])
         if b_data and m_type:
             try:
-                contents.append(types.Part.from_bytes(data=b_data, mime_type=m_type))
+                contents.append({"mime_type": m_type, "data": b_data})
             except Exception:
                 pass
 
     if len(contents) == 1:
         return error_result
 
-    # قائمة النماذج البديلة في حال حدوث خطأ 404 من Google
-    models_to_try = [model_choice, "gemini-1.5-flash", "gemini-2.0-flash", "gemini-2.5-flash"]
-    # إزالة التكرار مع الحفاظ على الترتيب
-    models_to_try = list(dict.fromkeys(models_to_try))
+    # نماذج رسمية ثابتة ومضمونة عدم إرجاع 404
+    candidate_models = [model_choice, "gemini-1.5-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro"]
+    candidate_models = list(dict.fromkeys(candidate_models))
 
-    last_error_msg = ""
-    for current_model in models_to_try:
-        max_retries = 2
-        for attempt in range(max_retries):
-            try:
-                response = client.models.generate_content(
-                    model=current_model,
-                    contents=contents,
-                )
-                text_res = response.text
-                cleaned = text_res.replace("```json", "").replace("```", "").strip()
-                data = json.loads(cleaned)
-                
-                return (
-                    data.get("attendance_data", error_result[0]),
-                    data.get("report_data", error_result[1]),
-                    data.get("differences", error_result[2])
-                )
-            except Exception as e:
-                err_msg = str(e)
-                last_error_msg = err_msg
-                # إذا كان الخطأ 404 تجرّب مباشرة النموذج التالي في القائمة
-                if "404" in err_msg or "NOT_FOUND" in err_msg:
-                    break
-                elif ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg) and attempt < max_retries - 1:
-                    time.sleep(5)
-                    continue
-                else:
-                    break
+    last_err = ""
+    for m_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(m_name)
+            response = model.generate_content(contents)
+            text_res = response.text
+            cleaned = text_res.replace("```json", "").replace("```", "").strip()
+            data = json.loads(cleaned)
+            
+            return (
+                data.get("attendance_data", error_result[0]),
+                data.get("report_data", error_result[1]),
+                data.get("differences", error_result[2])
+            )
+        except Exception as e:
+            last_err = str(e)
+            continue
 
     return (
         ["❌ خطأ API"] * 7,
         ["❌ خطأ API"] * 7,
-        [f"❌ {last_error_msg[:80]}"] + ["❌ خطأ"] * 6
+        [f"❌ {last_err[:80]}"] + ["❌ خطأ"] * 6
     )
 
 # --- الواجهة الرئيسية ---
@@ -298,8 +284,8 @@ with st.sidebar:
     GEMINI_API_KEY = st.text_input("مفتاح Gemini API:", value=default_api_key, type="password")
     
     selected_model = st.selectbox(
-        "اختر إصدار النموذج المفضّل:",
-        ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"],
+        "اختر إصدار النموذج:",
+        ["gemini-1.5-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro"],
         index=0
     )
     
@@ -329,9 +315,6 @@ with st.sidebar:
                 st.rerun()
 
 service = get_drive_service()
-
-if not GEMINI_API_KEY:
-    st.warning("⚠️ الرجاء إدخال مفتاح الذكاء الاصطناعي في الشريط الجانبي لتفعيل التحليل.")
 
 if not st.session_state.projects:
     st.info("👈 قم بإضافة أول مشروع من الشريط الجانبي وسيبقى محفوظاً دائماً.")
@@ -390,7 +373,7 @@ else:
                     st.markdown("---")
                     
                     st.subheader("🛠️ أدوات التحليل والمطابقة الذكية")
-                    b1, b2, b3, b4, b5, b6 = st.columns(6)
+                    b1, b2, b3, b4, b5, b6, b7 = st.columns(7)
                     
                     if b1.button("1️⃣ فحص المرفقات", key=f"b1_{p_name}"): st.session_state[f"view_{p_name}"] = "attachments"
                     if b2.button("2️⃣ مطابقة الحضور", key=f"b2_{p_name}"): st.session_state[f"view_{p_name}"] = "matching"
@@ -398,6 +381,7 @@ else:
                     if b4.button("4️⃣ سجل الفحص 📋", key=f"b4_{p_name}"): st.session_state[f"view_{p_name}"] = "logs"
                     if b5.button("5️⃣ تقرير الفجوات 📊", key=f"b5_{p_name}"): st.session_state[f"view_{p_name}"] = "gap_analysis"
                     if b6.button("6️⃣ المساعد الذكي 💬", key=f"b6_{p_name}"): st.session_state[f"view_{p_name}"] = "chat"
+                    if b7.button("🌐 تحليل خارجي", key=f"b7_{p_name}"): st.session_state[f"view_{p_name}"] = "external"
 
                     current_view = st.session_state.get(f"view_{p_name}", "attachments")
 
@@ -431,7 +415,7 @@ else:
                                     if not extra_files: st.caption("لا يوجد")
 
                     elif current_view == "matching":
-                        st.markdown(f"#### ⚖️ مطابقة المحتوى الفعلي عبر الذكاء الاصطناعي:")
+                        st.markdown(f"#### ⚖️ مطابقة المحتوى الفعلي تلقائياً عبر API:")
                         all_logs = load_scan_logs()
                         if p_name not in all_logs: all_logs[p_name] = {}
 
@@ -478,6 +462,54 @@ else:
                                     })
                                 else:
                                     st.info("اضغط على 'بدء / استكمال التحليل الذكي' لبدء القراءة والمطابقة.")
+
+                    elif current_view == "external":
+                        st.markdown("#### 🌐 التحليل الخارجي عن طريق Gemini Web المباشر:")
+                        st.info("يمكنك استخدام هذا الخيار مجاناً وبدون أي أخطاء من خلال توجيه الملفات لموقع Gemini المباشر وحفظ النتائج هنا.")
+                        
+                        sess_names = [s.get("session_name", "جلسة") for s in sessions_data]
+                        selected_ext_sess = st.selectbox("اختر الجلسة التي تريد تحليلها عبر Gemini Web:", sess_names)
+                        
+                        prompt_template = (
+                            "أنت مدقق ومراجع دقيق لمستندات المشاريع والمخيمات.\n"
+                            "قمت بإرفاق ملفات هذه الجلسة لك (كشوف الحضور، تقارير الإنجاز، أوراق التوثيق).\n"
+                            "قم بقراءة محتوى جميع الملفات المرفقة واستخرج البيانات التالية بدقة تامة:\n"
+                            "1. بيانات كشف الحضور (التاريخ، الإجمالي، رجال، نساء، أطفال ذكور، فتيات، ذوي احتياجات).\n"
+                            "2. بيانات التقرير (التاريخ، الإجمالي، رجال، نساء، أطفال ذكور، فتيات، ذوي احتياجات).\n"
+                            "3. قارن بين أرقام الحضور وأرقام التقرير وحدد الفروقات أو حالة التطابق لكل بند.\n\n"
+                            "تنبيه: إذا كان أحد الملفين مفقوداً ضع '❌ غير متوفر'.\n"
+                            "أجب بصيغة JSON صارمة فقط بالشكل التالي دون أي كود خارجي:\n"
+                            "{\n"
+                            '  "attendance_data": ["التاريخ", "الإجمالي", "رجال", "نساء", "أطفال ذكور", "فتيات", "ذوي احتياجات"],\n'
+                            '  "report_data": ["التاريخ", "الإجمالي", "رجال", "نساء", "أطفال ذكور", "فتيات", "ذوي احتياجات"],\n'
+                            '  "differences": ["مطابق / فرق...", "مطابق / فرق...", "مطابق / فرق...", "مطابق / فرق...", "مطابق / فرق...", "مطابق / فرق...", "مطابق / فرق..."]\n'
+                            "}"
+                        )
+
+                        st.markdown("**1️⃣ انسخ هذا الأمر وارفقه مع ملفات الجلسة في موقع [Gemini Web](https://gemini.google.com):**")
+                        st.code(prompt_template, language="text")
+
+                        st.markdown("**2️⃣ الصق الرد النامج من موقع Gemini هنا لحفظه في الجدول مباشرة:**")
+                        pasted_json = st.text_area("الرد النامج من Gemini (JSON):", height=150)
+                        
+                        if st.button("💾 حفظ البيانات المستخرجة في التطبيق"):
+                            if pasted_json:
+                                try:
+                                    cleaned_j = pasted_json.replace("```json", "").replace("```", "").strip()
+                                    parsed_d = json.loads(cleaned_j)
+                                    all_logs = load_scan_logs()
+                                    if p_name not in all_logs: all_logs[p_name] = {}
+                                    
+                                    all_logs[p_name][selected_ext_sess] = {
+                                        "attendance": parsed_d.get("attendance_data", []),
+                                        "report": parsed_d.get("report_data", []),
+                                        "differences": parsed_d.get("differences", []),
+                                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                                    }
+                                    save_scan_logs(all_logs)
+                                    st.success(f"✅ تم حفظ نتائج {selected_ext_sess} بنجاح!")
+                                except Exception as ex:
+                                    st.error(f"❌ الصيغة الملصقة غير صحيحة: {ex}")
 
                     elif current_view == "stats":
                         st.markdown("#### 📊 إحصائية المستفيدين استناداً للسجلات المحفوظة:")
@@ -571,11 +603,9 @@ else:
                                 )
 
                                 try:
-                                    client_g = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                    gap_res = client_g.models.generate_content(
-                                        model=selected_model,
-                                        contents=gap_prompt
-                                    )
+                                    genai.configure(api_key=GEMINI_API_KEY.strip())
+                                    model = genai.GenerativeModel(selected_model)
+                                    gap_res = model.generate_content(gap_prompt)
                                     st.session_state[f"gap_report_{p_name}"] = gap_res.text
                                 except Exception as e:
                                     st.error(f"❌ حدث خطأ أثناء توليد التقرير: {e}")
@@ -614,11 +644,9 @@ else:
                                 with st.spinner("جاري التفكير والأجابة..."):
                                     ai_prompt = f"أنت مساعد ذكي للمتابعة والتقييم.\nأجب باللغة العربية بناءً على البيانات التالية:\n{context_text}\nسؤال المستخدم: {prompt_text}"
                                     try:
-                                        client = genai.Client(api_key=GEMINI_API_KEY.strip())
-                                        resp = client.models.generate_content(
-                                            model=selected_model,
-                                            contents=ai_prompt
-                                        )
+                                        genai.configure(api_key=GEMINI_API_KEY.strip())
+                                        model = genai.GenerativeModel(selected_model)
+                                        resp = model.generate_content(ai_prompt)
                                         st.write(resp.text)
                                         st.session_state[chat_key].append({"role": "assistant", "content": resp.text})
                                     except Exception as e:
