@@ -1,5 +1,5 @@
 streamlit
-google-generativeai
+openai
 google-api-python-client
 google-auth
 google-auth-httplib2
