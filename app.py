@@ -182,13 +182,32 @@ with st.sidebar:
     st.header("🔑 إعدادات الذكاء الاصطناعي")
     user_gemini_key = st.text_input("مفتاح Gemini API", type="password", value=st.secrets.get("GEMINI_API_KEY", ""))
     
-    # قائمة اختيار النماذج المدعومة رسمياً في الـ API
     free_models_options = [
         "gemini-2.5-flash",
         "gemini-3.5-flash"
     ]
     selected_ai_model = st.selectbox("اختر نموذج الذكاء الاصطناعي:", free_models_options, index=0)
     
+    # زر فحص الأداة والمفتاح
+    if st.button("🧪 فحص الأداة والمفتاح"):
+        if not user_gemini_key:
+            st.warning("⚠️ يرجى إدخال مفتاح API أولاً.")
+        else:
+            with st.spinner("جاري فحص الاتصال بالنموذج والمفتاح..."):
+                try:
+                    test_url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_ai_model}:generateContent?key={user_gemini_key}"
+                    test_payload = {"contents": [{"parts": [{"text": "Hello"}]}]}
+                    test_res = requests.post(test_url, json=test_payload, headers={"Content-Type": "application/json"}, timeout=15)
+                    
+                    if test_res.status_code == 200:
+                        st.success(f"✅ الاتصال ناجح! النموذج ({selected_ai_model}) والمفتاح يعملان بكفاءة.")
+                    else:
+                        err_data = test_res.json()
+                        err_message = err_data.get("error", {}).get("message", "خطأ غير معروف")
+                        st.error(f"❌ فشل الفحص ({test_res.status_code}): {err_message}")
+                except Exception as e:
+                    st.error(f"❌ حدث خطأ أثناء الاتصال: {e}")
+
     st.markdown("---")
     st.header("⚙️ إدارة المشاريع المحفوظة")
     new_project_name = st.text_input("اسم المشروع")
