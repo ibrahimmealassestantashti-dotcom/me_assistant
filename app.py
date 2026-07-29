@@ -149,7 +149,7 @@ def fetch_structured_sessions(service, target_folder_id):
                     
     return sessions_list
 
-# --- دالة التحليل الذكي وقراءة الملفات عبر Gemini File API ---
+# --- دالة التحليل الذكي مع تحديد نوع الـ Mime Type بدقة ---
 def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
     if not api_key:
         return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API", "⚠️", "✅", "✅", "✅", "✅", "✅"]
@@ -161,18 +161,30 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
     uploaded_gemini_files = []
     
     try:
-        # تحميل الملفات من Drive رفعها مؤقتاً إلى مكتبة Gemini
         all_target_files = att_files + rep_files
         for f in all_target_files:
             f_bytes = download_file_bytes(service, f["id"])
             if f_bytes:
+                fname_lower = f["name"].lower()
+                # تحديد الـ mime_type بدقة حسب امتداد الملف
+                if fname_lower.endswith(".pdf"):
+                    mime_type = "application/pdf"
+                elif fname_lower.endswith(".docx") or fname_lower.endswith(".doc"):
+                    mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                elif fname_lower.endswith(".png"):
+                    mime_type = "image/png"
+                elif fname_lower.endswith(".jpg") or fname_lower.endswith(".jpeg"):
+                    mime_type = "image/jpeg"
+                else:
+                    mime_type = "application/octet-stream"
+
                 suffix = os.path.splitext(f["name"])[1]
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp.write(f_bytes)
                     tmp_path = tmp.name
                 
-                # رفع الملف باستخدام واجهة Gemini المخصصة للملفات
-                g_file = genai.upload_file(tmp_path, display_name=f["name"])
+                # رفع الملف مع تحديد الـ mime_type صراحةً لمنع الخطأ
+                g_file = genai.upload_file(tmp_path, mime_type=mime_type, display_name=f["name"])
                 uploaded_gemini_files.append(g_file)
                 try:
                     os.remove(tmp_path)
@@ -182,8 +194,8 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
         prompt = f"""
         أنت مدقق بيانات مشاريع محترف. قم بقراءة وفحص مستندات الحضور والتقارير المرفقة لهذه الجلسة ("{session_info.get('session_name')}") بدقة متناهية.
         ملاحظات هامة جداً:
-        1. ورقة الحضور عادة تكون ملف PDF ممسوح ضوئياً والأعداد والتواريخ مكتوبة بخط اليد.
-        2. التقرير عادة يكون ملف وورد (Word) أو PDF والبيانات موجودة في النصف الأول من الصفحة الأولى.
+        1. ورقة الحضور ملف PDF ممسوح ضوئياً والأعداد والتواريخ مكتوبة بخط اليد.
+        2. التقرير ملف وورد (Word) أو PDF والبيانات المطلوبة موجودة في النصف الأول من الصفحة الأولى.
         3. عدم وجود رقم أو خانة فارغة يعني تماماً أن القيمة هي صفر (0).
         
         استخرج البيانات التالية بدقة على شكل JSON صارم:
@@ -200,7 +212,6 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
         response = model.generate_content(model_input)
         text_res = response.text
         
-        # تنظيف وحذف الملفات المؤقتة من خوادم Gemini
         for g_file in uploaded_gemini_files:
             try:
                 genai.delete_file(g_file.name)
@@ -214,7 +225,6 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
             
     except Exception as e:
         st.error(f"خطأ أثناء معالجة وتحليل الملفات: {e}")
-        # تنظيف في حال حدوث خطأ
         for g_file in uploaded_gemini_files:
             try:
                 genai.delete_file(g_file.name)
@@ -403,7 +413,7 @@ else:
                                 result_key = f"match_res_{p_name}_{s_idx}"
                                 
                                 if col_m2.button("🔍 مطابقة الجلسة", key=match_btn_key):
-                                    with st.spinner("جاري رفع وقراءة المستندات الفعليّة عبر Gemini File API..."):
+                                    with st.spinner("جاري قراءة وتحليل المستندات الفعليّة بدقة..."):
                                         att_v, rep_v, diff_v = extract_session_metrics_with_ai(service, sess, user_gemini_key, final_model_to_use)
                                         st.session_state[result_key] = (att_v, rep_v, diff_v)
 
