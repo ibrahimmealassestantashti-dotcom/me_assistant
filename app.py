@@ -590,6 +590,7 @@ if st.button("🔍 اختبار قراءة مجلد Session_4"):
             st.write(f"📄 {f['name']} ({f['mimeType']})")
     else:
         st.error("❌ لم يتم العثور على ملفات. تأكد من مشاركة المجلد مع Service Account Email.")
+        
                     elif current_view == "gap_analysis":
                         st.markdown("#### 📊 تقرير تحليل الفجوات والمخاطر الشامل:")
                         all_logs = load_scan_logs()
