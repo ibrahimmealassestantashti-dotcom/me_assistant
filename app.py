@@ -277,7 +277,18 @@ st.markdown("---")
 
 if "projects" not in st.session_state:
     st.session_state.projects = load_saved_projects()
-
+# كود اختبار سريع لاتصال المجلد
+if st.button("🔍 اختبار قراءة مجلد Session_4"):
+    # ضع هنا Folder ID الخاص بمجلد Session_4 مباشرة للاختبار
+    test_folder_id = "ضع_معرف_مجلد_Session_4_هنا"
+    
+    _, files = get_folder_contents(service, test_folder_id)
+    if files:
+        st.success(f"✅ تم الاتصال بنجاح! تم العثور على {len(files)} ملفات:")
+        for f in files:
+            st.write(f"📄 {f['name']} ({f['mimeType']})")
+    else:
+        st.error("❌ لم يتم العثور على ملفات. تأكد من مشاركة المجلد مع Service Account Email.")
 with st.sidebar:
     st.header("⚙️ إعدادات النظام والمشاريع")
     default_api_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -578,18 +589,6 @@ else:
                                         del all_logs[p_name][sess_name]
                                         save_scan_logs(all_logs)
                                         st.rerun()
-# كود اختبار سريع لاتصال المجلد
-if st.button("🔍 اختبار قراءة مجلد Session_4"):
-    # ضع هنا Folder ID الخاص بمجلد Session_4 مباشرة للاختبار
-    test_folder_id = "ضع_معرف_مجلد_Session_4_هنا"
-    
-    _, files = get_folder_contents(service, test_folder_id)
-    if files:
-        st.success(f"✅ تم الاتصال بنجاح! تم العثور على {len(files)} ملفات:")
-        for f in files:
-            st.write(f"📄 {f['name']} ({f['mimeType']})")
-    else:
-        st.error("❌ لم يتم العثور على ملفات. تأكد من مشاركة المجلد مع Service Account Email.")
         
                     elif current_view == "gap_analysis":
                         st.markdown("#### 📊 تقرير تحليل الفجوات والمخاطر الشامل:")
