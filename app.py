@@ -182,15 +182,12 @@ with st.sidebar:
     st.header("🔑 إعدادات الذكاء الاصطناعي")
     user_gemini_key = st.text_input("مفتاح Gemini API", type="password", value=st.secrets.get("GEMINI_API_KEY", ""))
     
-    # قائمة اختيار أداة/نموذج الذكاء الاصطناعي المجاني
+    # قائمة اختيار النماذج المدعومة رسمياً في الـ API
     free_models_options = [
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-8b",
         "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-3-flash"
+        "gemini-3.5-flash"
     ]
-    selected_ai_model = st.selectbox("اختر نموذج الذكاء الاصطناعي (مجاني):", free_models_options, index=0)
+    selected_ai_model = st.selectbox("اختر نموذج الذكاء الاصطناعي:", free_models_options, index=0)
     
     st.markdown("---")
     st.header("⚙️ إدارة المشاريع المحفوظة")
