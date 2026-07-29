@@ -2,7 +2,7 @@ import streamlit as st
 import json
 import os
 import re
-import requests
+import google.generativeai as genai
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -144,7 +144,7 @@ def extract_session_metrics_with_ai(session_info, api_key, model_name):
     
     prompt = f"""
     أنت مدقق بيانات مشاريع. بناءً على أسماء ملفات الحضور وملفات التقارير التالية لجلسة "{session_info.get('session_name')}", قم بتقدير أو استخراج القيم الحقيقية بدقة على شكل صيغة JSON فقط تتضمن مفاتيح محددة:
-    - attendance_data: [التاريخ، الإجمالي، رجال، نساء، أطفال ذكور، فتيات، ذوي احتياجات]
+    - attendance_data: [التاريخ، الإجمالي،رجال، نساء، أطفال ذكور، فتيات، ذوي احتياجات]
     - report_data: [التاريخ، الإجمالي، رجال، نساء، أطفال ذكور، فتيات، ذوي احتياجات]
     - differences: [قائمة تقييم لكل بند مطابقة أو خطأ]
 
@@ -155,19 +155,17 @@ def extract_session_metrics_with_ai(session_info, api_key, model_name):
     """
     
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-        headers = {"Content-Type": "application/json"}
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name)
+        response = model.generate_content(prompt)
         
-        res = requests.post(url, json=payload, headers=headers, timeout=20)
-        if res.status_code == 200:
-            text_res = res.json()['candidates'][0]['content']['parts'][0]['text']
-            match = re.search(r'\{.*\}', text_res, re.DOTALL)
-            if match:
-                data = json.loads(match.group(0))
-                return data["attendance_data"], data["report_data"], data["differences"]
-    except Exception:
-        pass
+        text_res = response.text
+        match = re.search(r'\{.*\}', text_res, re.DOTALL)
+        if match:
+            data = json.loads(match.group(0))
+            return data["attendance_data"], data["report_data"], data["differences"]
+    except Exception as e:
+        st.error(f"خطأ أثناء معالجة البيانات: {e}")
         
     return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ تعذر التحليل", "⚠️ تعذر التحليل", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
 
@@ -182,33 +180,28 @@ with st.sidebar:
     st.header("🔑 إعدادات الذكاء الاصطناعي")
     user_gemini_key = st.text_input("مفتاح Gemini API", type="password", value=st.secrets.get("GEMINI_API_KEY", ""))
     
-    # قائمة النماذج المتاحة والمدعومة للمفاتيح الجديدة
+    # القائمة المستقرة والمعتمدة رسمياً
     free_models_options = [
         "gemini-1.5-flash",
-        "gemini-1.5-flash-8b",
-        "gemini-2.0-flash"
+        "gemini-1.5-pro"
     ]
     selected_ai_model = st.selectbox("اختر نموذج الذكاء الاصطناعي:", free_models_options, index=0)
     
-    # زر فحص الأداة والمفتاح
+    # زر فحص الأداة والمفتاح باستخدام المكتبة الرسمية
     if st.button("🧪 فحص الأداة والمفتاح"):
         if not user_gemini_key:
             st.warning("⚠️ يرجى إدخال مفتاح API أولاً.")
         else:
-            with st.spinner("جاري فحص الاتصال بالنموذج والمفتاح..."):
+            with st.spinner("جاري فحص الاتصال بالمكتبة الرسمية..."):
                 try:
-                    test_url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_ai_model}:generateContent?key={user_gemini_key}"
-                    test_payload = {"contents": [{"parts": [{"text": "Hello"}]}]}
-                    test_res = requests.post(test_url, json=test_payload, headers={"Content-Type": "application/json"}, timeout=15)
+                    genai.configure(api_key=user_gemini_key)
+                    test_model = genai.GenerativeModel(selected_ai_model)
+                    test_res = test_model.generate_content("اختبار الاتصال")
                     
-                    if test_res.status_code == 200:
-                        st.success(f"✅ الاتصال ناجح! النموذج ({selected_ai_model}) والمفتاح يعملان بكفاءة.")
-                    else:
-                        err_data = test_res.json()
-                        err_message = err_data.get("error", {}).get("message", "خطأ غير معروف")
-                        st.error(f"❌ فشل الفحص ({test_res.status_code}): {err_message}")
+                    if test_res.text:
+                        st.success(f"✅ الاتصال ناجح! النموذج ({selected_ai_model}) والمفتاح يعملان بكفاءة ممتازة.")
                 except Exception as e:
-                    st.error(f"❌ حدث خطأ أثناء الاتصال: {e}")
+                    st.error(f"❌ فشل الفحص: {e}")
 
     st.markdown("---")
     st.header("⚙️ إدارة المشاريع المحفوظة")
@@ -427,29 +420,18 @@ else:
                                         if not user_gemini_key:
                                             st.error("❌ يرجى إدخال مفتاح Gemini API في القائمة الجانبية أولاً.")
                                         else:
-                                            url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_ai_model}:generateContent?key={user_gemini_key}"
-                                            headers = {"Content-Type": "application/json"}
+                                            genai.configure(api_key=user_gemini_key)
+                                            chat_model = genai.GenerativeModel(selected_ai_model)
+                                            
                                             ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
                                             
-                                            payload = {
-                                                "contents": [{
-                                                    "parts": [{"text": ai_prompt}]
-                                                }]
-                                            }
-
-                                            res = requests.post(url, json=payload, headers=headers, timeout=30)
-                                            res_json = res.json()
-
-                                            if res.status_code == 200:
-                                                ai_response = res_json['candidates'][0]['content']['parts'][0]['text']
-                                                st.write(ai_response)
-                                                st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
-                                            else:
-                                                err_msg = res_json.get('error', {}).get('message', 'خطأ غير معروف')
-                                                st.error(f"❌ خطأ من Google API ({res.status_code}): {err_msg}")
+                                            response = chat_model.generate_content(ai_prompt)
+                                            ai_response = response.text
+                                            st.write(ai_response)
+                                            st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
                                                 
                                     except Exception as e:
-                                        st.error(f"❌ فشل الاتصال بالخادم: {e}")
+                                        st.error(f"❌ فشل الاتصال: {e}")
 
 st.markdown("---")
 st.markdown(
