@@ -149,15 +149,17 @@ def fetch_structured_sessions(service, target_folder_id):
                     
     return sessions_list
 
-# --- دالة التحليل الذكي مع تحديد نوع الـ Mime Type بدقة ---
+# --- دالة التحليل الذكي مع تمرير المفتاح صراحةً لـ genai ---
 def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
     if not api_key:
         return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API", "⚠️", "✅", "✅", "✅", "✅", "✅"]
 
+    # تهيئة مفتاح API بشكل قاطع ومباشر
+    genai.configure(api_key=api_key.strip())
+
     att_files = session_info.get("attendance", {}).get("files", [])
     rep_files = session_info.get("report", {}).get("files", [])
     
-    genai.configure(api_key=api_key)
     uploaded_gemini_files = []
     
     try:
@@ -166,7 +168,6 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
             f_bytes = download_file_bytes(service, f["id"])
             if f_bytes:
                 fname_lower = f["name"].lower()
-                # تحديد الـ mime_type بدقة حسب امتداد الملف
                 if fname_lower.endswith(".pdf"):
                     mime_type = "application/pdf"
                 elif fname_lower.endswith(".docx") or fname_lower.endswith(".doc"):
@@ -183,7 +184,7 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
                     tmp.write(f_bytes)
                     tmp_path = tmp.name
                 
-                # رفع الملف مع تحديد الـ mime_type صراحةً لمنع الخطأ
+                # رفع الملف باستخدام المفتاح المباشر
                 g_file = genai.upload_file(tmp_path, mime_type=mime_type, display_name=f["name"])
                 uploaded_gemini_files.append(g_file)
                 try:
@@ -263,7 +264,7 @@ with st.sidebar:
         else:
             with st.spinner("جاري فحص الاتصال..."):
                 try:
-                    genai.configure(api_key=user_gemini_key)
+                    genai.configure(api_key=user_gemini_key.strip())
                     test_model = genai.GenerativeModel(final_model_to_use)
                     test_res = test_model.generate_content("مرحبا")
                     if test_res.text:
@@ -497,7 +498,7 @@ else:
                                 with st.chat_message("assistant"):
                                     with st.spinner("جاري معالجة السؤال..."):
                                         try:
-                                            genai.configure(api_key=user_gemini_key)
+                                            genai.configure(api_key=user_gemini_key.strip())
                                             chat_model = genai.GenerativeModel(final_model_to_use)
                                             ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع.\nاجب بلغة عربية دقيقة بناءً على البيانات التالية:\n{context_text}\nسؤال المستخدم: {prompt_text}"
                                             response = chat_model.generate_content(ai_prompt)
