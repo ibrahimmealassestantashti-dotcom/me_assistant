@@ -132,9 +132,9 @@ def fetch_structured_sessions(service, target_folder_id):
                     
     return sessions_list
 
-def extract_session_metrics_with_ai(session_info, api_key):
+def extract_session_metrics_with_ai(session_info, api_key, model_name):
     if not api_key:
-        return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API في القائمة الجانبية", "⚠️", "✅", "✅", "✅", "✅", "✅"]
+        return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API", "⚠️", "✅", "✅", "✅", "✅", "✅"]
 
     att_files = session_info.get("attendance", {}).get("files", [])
     rep_files = session_info.get("report", {}).get("files", [])
@@ -155,7 +155,7 @@ def extract_session_metrics_with_ai(session_info, api_key):
     """
     
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
         headers = {"Content-Type": "application/json"}
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
         
@@ -181,6 +181,16 @@ if "projects" not in st.session_state:
 with st.sidebar:
     st.header("🔑 إعدادات الذكاء الاصطناعي")
     user_gemini_key = st.text_input("مفتاح Gemini API", type="password", value=st.secrets.get("GEMINI_API_KEY", ""))
+    
+    # قائمة اختيار أداة/نموذج الذكاء الاصطناعي المجاني
+    free_models_options = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-8b",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-3-flash"
+    ]
+    selected_ai_model = st.selectbox("اختر نموذج الذكاء الاصطناعي (مجاني):", free_models_options, index=0)
     
     st.markdown("---")
     st.header("⚙️ إدارة المشاريع المحفوظة")
@@ -324,7 +334,7 @@ else:
                             
                             if col_m2.button("🔍 مطابقة الجلسة", key=match_btn_key):
                                 with st.spinner("جاري التحليل بالذكاء الاصطناعي..."):
-                                    att_v, rep_v, diff_v = extract_session_metrics_with_ai(sess, user_gemini_key)
+                                    att_v, rep_v, diff_v = extract_session_metrics_with_ai(sess, user_gemini_key, selected_ai_model)
                                     st.session_state[result_key] = (att_v, rep_v, diff_v)
 
                             if result_key in st.session_state:
@@ -399,7 +409,7 @@ else:
                                         if not user_gemini_key:
                                             st.error("❌ يرجى إدخال مفتاح Gemini API في القائمة الجانبية أولاً.")
                                         else:
-                                            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={user_gemini_key}"
+                                            url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_ai_model}:generateContent?key={user_gemini_key}"
                                             headers = {"Content-Type": "application/json"}
                                             ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
                                             
