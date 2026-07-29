@@ -14,12 +14,6 @@ st.set_page_config(
 
 CONFIG_FILE = "saved_projects.json"
 
-# جلب مفتاح الذكاء الاصطناعي بأمان من إعدادات الـ Secrets
-try:
-    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-except Exception:
-    GEMINI_API_KEY = ""
-
 def load_saved_projects():
     if os.path.exists(CONFIG_FILE):
         try:
@@ -138,9 +132,9 @@ def fetch_structured_sessions(service, target_folder_id):
                     
     return sessions_list
 
-def extract_session_metrics_with_ai(session_info):
-    if not GEMINI_API_KEY:
-        return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ مفتاح API غير متوفر", "⚠️", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
+def extract_session_metrics_with_ai(session_info, api_key):
+    if not api_key:
+        return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API في القائمة الجانبية", "⚠️", "✅", "✅", "✅", "✅", "✅"]
 
     att_files = session_info.get("attendance", {}).get("files", [])
     rep_files = session_info.get("report", {}).get("files", [])
@@ -161,7 +155,7 @@ def extract_session_metrics_with_ai(session_info):
     """
     
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
         headers = {"Content-Type": "application/json"}
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
         
@@ -177,10 +171,6 @@ def extract_session_metrics_with_ai(session_info):
         
     return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ تعذر التحليل", "⚠️ تعذر التحليل", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
 
-def has_session_mismatch(session_info):
-    _, _, diff_vals = extract_session_metrics_with_ai(session_info)
-    return any("⚠️" in d or "خطأ" in d for d in diff_vals)
-
 # --- الواجهة الرئيسية ---
 st.title("📊 نظام إدارة ومتابعة المشاريع الذكي (ME Assistant)")
 st.markdown("---")
@@ -189,6 +179,10 @@ if "projects" not in st.session_state:
     st.session_state.projects = load_saved_projects()
 
 with st.sidebar:
+    st.header("🔑 إعدادات الذكاء الاصطناعي")
+    user_gemini_key = st.text_input("مفتاح Gemini API", type="password", value=st.secrets.get("GEMINI_API_KEY", ""))
+    
+    st.markdown("---")
     st.header("⚙️ إدارة المشاريع المحفوظة")
     new_project_name = st.text_input("اسم المشروع")
     new_project_id = st.text_input("معرف المجلد (Folder ID)")
@@ -296,18 +290,13 @@ else:
 
                     if current_view == "attachments":
                         st.markdown("#### 📋 نتيجة فحص مجلدات الجلسات الفرعية الثلاثة:")
-                        for sess in sessions_data:
+                        for s_idx, sess in enumerate(sessions_data):
                             att_files = sess.get("attendance", {}).get("files", [])
                             doc_files = sess.get("documentation", {}).get("files", [])
                             rep_files = sess.get("report", {}).get("files", [])
                             
                             is_complete = len(att_files) > 0 and len(doc_files) > 0 and len(rep_files) > 0
-                            has_error = has_session_mismatch(sess)
-                            
                             status_tag = "✅ مكتملة" if is_complete else "⚠️ ناقصة"
-                            if has_error:
-                                status_tag += " | ⚠️ تنبيه: يوجد خطأ مطابقه"
-
                             sess_title = sess.get("session_name", "جلسة بدون عنوان")
                             
                             with st.expander(f"📌 **{sess_title}** — الحالة: {status_tag}"):
@@ -324,28 +313,49 @@ else:
 
                     elif current_view == "matching":
                         st.markdown("#### ⚖️ مطابقة أوراق الحضور مع التقارير بالذكاء الاصطناعي:")
-                        for sess in sessions_data:
+                        for s_idx, sess in enumerate(sessions_data):
                             sess_title = sess.get("session_name", "جلسة")
-                            has_error = has_session_mismatch(sess)
-                            title_prefix = "⚠️ [يوجد خطأ مطابقة] " if has_error else ""
                             
-                            att_vals, rep_vals, diff_vals = extract_session_metrics_with_ai(sess)
-                            comparison_data = {
-                                "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
-                                "ورقة الحضور": att_vals,
-                                "التقرير": rep_vals,
-                                "النتيجة / الفروقات": diff_vals
-                            }
-                            with st.expander(f"🔍 {title_prefix}**جلسة: {sess_title}**"):
+                            col_m1, col_m2 = st.columns([4, 1])
+                            col_m1.markdown(f"##### 📌 جلسة: {sess_title}")
+                            
+                            match_btn_key = f"match_exec_{p_name}_{s_idx}"
+                            result_key = f"match_res_{p_name}_{s_idx}"
+                            
+                            if col_m2.button("🔍 مطابقة الجلسة", key=match_btn_key):
+                                with st.spinner("جاري التحليل بالذكاء الاصطناعي..."):
+                                    att_v, rep_v, diff_v = extract_session_metrics_with_ai(sess, user_gemini_key)
+                                    st.session_state[result_key] = (att_v, rep_v, diff_v)
+
+                            if result_key in st.session_state:
+                                att_vals, rep_vals, diff_vals = st.session_state[result_key]
+                                comparison_data = {
+                                    "البند": ["تاريخ الجلسة", "العدد الإجمالي", "الرجال (Men)", "النساء (Women)", "الأولاد (Boys)", "الفتيات (Girls)", "ذوي الاحتياجات (PWD)"],
+                                    "ورقة الحضور": att_vals,
+                                    "التقرير": rep_vals,
+                                    "النتيجة / الفروقات": diff_vals
+                                }
                                 st.table(comparison_data)
+                            else:
+                                st.info("اضغط على زر (مطابقة الجلسة) أعلاه لبدء التحليل لهذه الجلسة.")
+                            st.markdown("---")
 
                     elif current_view == "stats":
-                        st.markdown("#### 📊 الإحصائية التجميعية للمستفيدين عبر كافة الجلسات:")
-                        tot_men = sum(int(extract_session_metrics_with_ai(s)[0][2]) for s in sessions_data)
-                        tot_women = sum(int(extract_session_metrics_with_ai(s)[0][3]) for s in sessions_data)
-                        tot_boys = sum(int(extract_session_metrics_with_ai(s)[0][4]) for s in sessions_data)
-                        tot_girls = sum(int(extract_session_metrics_with_ai(s)[0][5]) for s in sessions_data)
-                        tot_pwd = sum(int(extract_session_metrics_with_ai(s)[0][6]) for s in sessions_data)
+                        st.markdown("#### 📊 الإحصائية التجميعية للمستفيدين عبر الجلسات المطابقة:")
+                        tot_men, tot_women, tot_boys, tot_girls, tot_pwd = 0, 0, 0, 0, 0
+                        
+                        for s_idx, s in enumerate(sessions_data):
+                            res_key = f"match_res_{p_name}_{s_idx}"
+                            if res_key in st.session_state:
+                                att_v, _, _ = st.session_state[res_key]
+                                try:
+                                    tot_men += int(att_v[2])
+                                    tot_women += int(att_v[3])
+                                    tot_boys += int(att_v[4])
+                                    tot_girls += int(att_v[5])
+                                    tot_pwd += int(att_v[6])
+                                except Exception:
+                                    pass
                             
                         col_stat1, col_stat2, col_stat3, col_stat4, col_stat5 = st.columns(5)
                         col_stat1.metric("👨 رجال", str(tot_men))
@@ -374,37 +384,42 @@ else:
                             context_text = f"مشروع: {p_name} | المجلد: {current_folder['name']}\n"
                             context_text += f"عدد الجلسات الإجمالي: {len(sessions_data)}\n\n"
                             
-                            for s in sessions_data:
+                            for s_idx, s in enumerate(sessions_data):
                                 s_title = s.get('session_name', '')
-                                att_v, rep_v, _ = extract_session_metrics_with_ai(s)
-                                context_text += f"- {s_title}:\n"
-                                context_text += f"  * التواريخ: حضور ({att_v[0]})، تقرير ({rep_v[0]})\n"
-                                context_text += f"  * المجموع: حضور ({att_v[1]})، تقرير ({rep_v[1]})\n"
+                                res_key = f"match_res_{p_name}_{s_idx}"
+                                if res_key in st.session_state:
+                                    att_v, rep_v, _ = st.session_state[res_key]
+                                    context_text += f"- {s_title}:\n"
+                                    context_text += f"  * التواريخ: حضور ({att_v[0]})، تقرير ({rep_v[0]})\n"
+                                    context_text += f"  * المجموع: حضور ({att_v[1]})، تقرير ({rep_v[1]})\n"
 
                             with st.chat_message("assistant"):
                                 with st.spinner("جاري معالجة السؤال بواسطة الذكاء الاصطناعي..."):
                                     try:
-                                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-                                        headers = {"Content-Type": "application/json"}
-                                        ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
-                                        
-                                        payload = {
-                                            "contents": [{
-                                                "parts": [{"text": ai_prompt}]
-                                            }]
-                                        }
-
-                                        res = requests.post(url, json=payload, headers=headers, timeout=30)
-                                        res_json = res.json()
-
-                                        if res.status_code == 200:
-                                            ai_response = res_json['candidates'][0]['content']['parts'][0]['text']
-                                            st.write(ai_response)
-                                            st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
+                                        if not user_gemini_key:
+                                            st.error("❌ يرجى إدخال مفتاح Gemini API في القائمة الجانبية أولاً.")
                                         else:
-                                            err_msg = res_json.get('error', {}).get('message', 'خطأ غير معروف')
-                                            st.error(f"❌ خطأ من Google API ({res.status_code}): {err_msg}")
+                                            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={user_gemini_key}"
+                                            headers = {"Content-Type": "application/json"}
+                                            ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع ومتابعة الجلسات.\nاجب بلغة عربية دقيقة وبشكل مباشر بأرقام وإحصائيات بناءً على البيانات التالية:\n\n--- البيانات ---\n{context_text}\n--- نهاية البيانات ---\n\nسؤال المستخدم: {prompt_text}"
                                             
+                                            payload = {
+                                                "contents": [{
+                                                    "parts": [{"text": ai_prompt}]
+                                                }]
+                                            }
+
+                                            res = requests.post(url, json=payload, headers=headers, timeout=30)
+                                            res_json = res.json()
+
+                                            if res.status_code == 200:
+                                                ai_response = res_json['candidates'][0]['content']['parts'][0]['text']
+                                                st.write(ai_response)
+                                                st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
+                                            else:
+                                                err_msg = res_json.get('error', {}).get('message', 'خطأ غير معروف')
+                                                st.error(f"❌ خطأ من Google API ({res.status_code}): {err_msg}")
+                                                
                                     except Exception as e:
                                         st.error(f"❌ فشل الاتصال بالخادم: {e}")
 
