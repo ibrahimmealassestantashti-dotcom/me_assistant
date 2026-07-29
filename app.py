@@ -187,20 +187,23 @@ with st.sidebar:
     st.header("🔑 إعدادات الذكاء الاصطناعي")
     user_gemini_key = st.text_input("مفتاح Gemini API", type="password", value=st.secrets.get("GEMINI_API_KEY", ""))
     
-    # قائمة النماذج
+    # قائمة النماذج المحدثة والمطابقة لمفتاحك الفعلي
     free_models_options = [
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-pro",
-        "gemini-2.0-flash-exp"
+        "gemini-3.6-flash",          # الأحدث والأسرع
+        "gemini-3.5-flash",          # مستقر وسريع
+        "gemini-3.1-pro-preview",    # للتحليل المعقد
+        "gemini-2.5-flash",          # موثوق وسريع جداً
+        "gemini-2.5-pro",            # دقيق جداً للمطابقات
+        "gemini-2.0-flash"           # النسخة المستقرة من 2.0
     ]
+    
     selected_ai_model = st.selectbox("اختر نموذج الذكاء الاصطناعي:", free_models_options, index=0)
     custom_model_name = st.text_input("أو أدخل اسم النموذج يدوياً (إن لزم الأمر):", help="اتركه فارغاً إذا كنت تستخدم القائمة المنسدلة أعلاه")
     
     # تحديد النموذج النهائي المستخدم
     final_model_to_use = custom_model_name.strip() if custom_model_name.strip() else selected_ai_model
 
-    # زر فحص الأداة والمفتاح (مع معالجة مشاكل v1beta وجلب النماذج المتاحة)
+    # زر فحص الأداة والمفتاح
     if st.button("🧪 فحص الأداة والمفتاح"):
         if not user_gemini_key:
             st.warning("⚠️ يرجى إدخال مفتاح API أولاً.")
