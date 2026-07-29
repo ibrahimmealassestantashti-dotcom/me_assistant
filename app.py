@@ -3,6 +3,7 @@ import json
 import os
 import re
 import io
+import tempfile
 import google.generativeai as genai
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -148,7 +149,7 @@ def fetch_structured_sessions(service, target_folder_id):
                     
     return sessions_list
 
-# --- دالة التحليل الذكي وقراءة الملفات الحقيقية عبر Gemini ---
+# --- دالة التحليل الذكي وقراءة الملفات عبر Gemini File API ---
 def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
     if not api_key:
         return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API", "⚠️", "✅", "✅", "✅", "✅", "✅"]
@@ -156,51 +157,69 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
     att_files = session_info.get("attendance", {}).get("files", [])
     rep_files = session_info.get("report", {}).get("files", [])
     
-    contents_payload = []
-    
-    # تحميل محتوى ملفات الحضور الفعليّة (PDF أو صور)
-    for f in att_files:
-        f_bytes = download_file_bytes(service, f["id"])
-        if f_bytes:
-            mime = "application/pdf" if f["name"].lower().endswith(".pdf") else "image/jpeg"
-            contents_payload.append({"mime_type": mime, "data": f_bytes})
-            
-    # تحميل محتوى ملفات التقارير الفعليّة
-    for f in rep_files:
-        f_bytes = download_file_bytes(service, f["id"])
-        if f_bytes:
-            mime = "application/pdf" if f["name"].lower().endswith(".pdf") else "application/octet-stream"
-            contents_payload.append({"mime_type": mime, "data": f_bytes})
-
-    prompt = f"""
-    أنت مدقق بيانات مشاريع محترف. قم بقراءة وفحص مستندات الحضور والتقارير المرفقة لهذه الجلسة ("{session_info.get('session_name')}") بدقة متناهية.
-    تذكر أن الأعداد والتواريخ قد تكون مكتوبة بخط اليد أو داخل جداول، وعدم وجود رقم صريح يعني اعتبار القيمة صفر (0).
-    استخرج البيانات التالية لكل من (ورقة الحضور) و (التقرير) بدقة:
-    - attendance_data: [التاريخ، العدد الإجمالي، الرجال (Men)، النساء (Women)، الأولاد/أطفال ذكور (Boys)، الفتيات (Girls)، ذوي الاحتياجات (PWD)]
-    - report_data: [التاريخ، العدد الإجمالي، الرجال (Men)، النساء (Women)، الأولاد/أطفال ذكور (Boys)، الفتيات (Girls)، ذوي الاحتياجات (PWD)]
-    - differences: [تقييم لكل بند: اكتب "مطابقة" إذا كانت متطابقة تماماً بين الحضور والتقرير، أو اكتب وصف الفارق إذا وُجد اختلاف]
-
-    أجب بصيغة JSON صارمة فقط وبدون أي نصوص إضافية، بحيث تكون القوائم تحتوي على 7 عناصر تماماً، وجميع القيم الرقمية أو التواريخ مضبوطة وصحيحة. وإذا لم توجد قيمة ضع "0".
-    """
+    genai.configure(api_key=api_key)
+    uploaded_gemini_files = []
     
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_name)
+        # تحميل الملفات من Drive رفعها مؤقتاً إلى مكتبة Gemini
+        all_target_files = att_files + rep_files
+        for f in all_target_files:
+            f_bytes = download_file_bytes(service, f["id"])
+            if f_bytes:
+                suffix = os.path.splitext(f["name"])[1]
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(f_bytes)
+                    tmp_path = tmp.name
+                
+                # رفع الملف باستخدام واجهة Gemini المخصصة للملفات
+                g_file = genai.upload_file(tmp_path, display_name=f["name"])
+                uploaded_gemini_files.append(g_file)
+                try:
+                    os.remove(tmp_path)
+                except:
+                    pass
+
+        prompt = f"""
+        أنت مدقق بيانات مشاريع محترف. قم بقراءة وفحص مستندات الحضور والتقارير المرفقة لهذه الجلسة ("{session_info.get('session_name')}") بدقة متناهية.
+        ملاحظات هامة جداً:
+        1. ورقة الحضور عادة تكون ملف PDF ممسوح ضوئياً والأعداد والتواريخ مكتوبة بخط اليد.
+        2. التقرير عادة يكون ملف وورد (Word) أو PDF والبيانات موجودة في النصف الأول من الصفحة الأولى.
+        3. عدم وجود رقم أو خانة فارغة يعني تماماً أن القيمة هي صفر (0).
         
-        # تجهيز المدخلات للنموذج (الملفات + النص)
-        model_input = [prompt]
-        for item in contents_payload:
-            model_input.append({"mime_type": item["mime_type"], "data": item["data"]})
-            
+        استخرج البيانات التالية بدقة على شكل JSON صارم:
+        - attendance_data: [التاريخ، العدد الإجمالي، الرجال (Men)، النساء (Women)، الأولاد/أطفال ذكور (Boys)، الفتيات (Girls)، ذوي الاحتياجات (PWD)]
+        - report_data: [التاريخ، العدد الإجمالي، الرجال (Men)، النساء (Women)، الأولاد/أطفال ذكور (Boys)، الفتيات (Girls)، ذوي الاحتياجات (PWD)]
+        - differences: [تقييم لكل بند: اكتب "مطابقة" إذا كانت متطابقة تماماً، أو اكتب وصف الفارق إذا وُجد اختلاف]
+
+        أجب بصيغة JSON صارمة فقط وبدون أي نصوص إضافية، بحيث تكون القوائم تحتوي على 7 عناصر تماماً، وجميع القيم الرقمية أو التواريخ مضبوطة وصحيحة. وإذا لم توجد قيمة ضع "0".
+        """
+
+        model = genai.GenerativeModel(model_name)
+        model_input = [prompt] + uploaded_gemini_files
+        
         response = model.generate_content(model_input)
         text_res = response.text
         
+        # تنظيف وحذف الملفات المؤقتة من خوادم Gemini
+        for g_file in uploaded_gemini_files:
+            try:
+                genai.delete_file(g_file.name)
+            except:
+                pass
+
         match = re.search(r'\{.*\}', text_res, re.DOTALL)
         if match:
             data = json.loads(match.group(0))
             return data.get("attendance_data", ["--", "0", "0", "0", "0", "0", "0"]), data.get("report_data", ["--", "0", "0", "0", "0", "0", "0"]), data.get("differences", ["✅", "✅", "✅", "✅", "✅", "✅", "✅"])
+            
     except Exception as e:
-        st.error(f"خطأ أثناء معالجة البيانات وتحليل الملفات: {e}")
+        st.error(f"خطأ أثناء معالجة وتحليل الملفات: {e}")
+        # تنظيف في حال حدوث خطأ
+        for g_file in uploaded_gemini_files:
+            try:
+                genai.delete_file(g_file.name)
+            except:
+                pass
         
     return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ تعذر التحليل", "⚠️ تعذر التحليل", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
 
@@ -226,7 +245,7 @@ with st.sidebar:
     ]
     
     selected_ai_model = st.selectbox("اختر نموذج الذكاء الاصطناعي:", free_models_options, index=0)
-    final_model_to_use = selected_ai_model  # تم حذف مربع الإدخال اليدوي بناءً على طلبك
+    final_model_to_use = selected_ai_model
 
     if st.button("🧪 فحص الأداة والمفتاح"):
         if not user_gemini_key:
@@ -384,7 +403,7 @@ else:
                                 result_key = f"match_res_{p_name}_{s_idx}"
                                 
                                 if col_m2.button("🔍 مطابقة الجلسة", key=match_btn_key):
-                                    with st.spinner("جاري تحميل وقراءة الملفات الفعلية وتحليلها بالذكاء الاصطناعي..."):
+                                    with st.spinner("جاري رفع وقراءة المستندات الفعليّة عبر Gemini File API..."):
                                         att_v, rep_v, diff_v = extract_session_metrics_with_ai(service, sess, user_gemini_key, final_model_to_use)
                                         st.session_state[result_key] = (att_v, rep_v, diff_v)
 
