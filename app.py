@@ -247,7 +247,7 @@ with st.sidebar:
     st.header("🔑 إعدادات الذكاء الاصطناعي")
     user_gemini_key = st.text_input("مفتاح Gemini API", type="password", value=st.secrets.get("GEMINI_API_KEY", ""))
     
-   free_models_options = [
+    free_models_options = [
         "gemini-3.6-flash",
         "gemini-3.5-flash",
         "gemini-3.1-pro-preview",
