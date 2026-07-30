@@ -149,13 +149,14 @@ def fetch_structured_sessions(service, target_folder_id):
                     
     return sessions_list
 
-# --- دالة التحليل الذكي مع تمرير المفتاح صراحةً لـ genai ---
+# --- دالة التحليل الذكي مع التثبيت المزدوج لمفتاح API ومتغير البيئة ---
 def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
     if not api_key:
         return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API", "⚠️", "✅", "✅", "✅", "✅", "✅"]
 
-    # تهيئة مفتاح API بشكل قاطع ومباشر
-    genai.configure(api_key=api_key.strip())
+    clean_key = api_key.strip()
+    genai.configure(api_key=clean_key)
+    os.environ["GEMINI_API_KEY"] = clean_key
 
     att_files = session_info.get("attendance", {}).get("files", [])
     rep_files = session_info.get("report", {}).get("files", [])
@@ -184,7 +185,7 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
                     tmp.write(f_bytes)
                     tmp_path = tmp.name
                 
-                # رفع الملف باستخدام المفتاح المباشر
+                # رفع الملف بعد تجهيز البيئة بالكامل
                 g_file = genai.upload_file(tmp_path, mime_type=mime_type, display_name=f["name"])
                 uploaded_gemini_files.append(g_file)
                 try:
@@ -247,12 +248,11 @@ with st.sidebar:
     user_gemini_key = st.text_input("مفتاح Gemini API", type="password", value=st.secrets.get("GEMINI_API_KEY", ""))
     
     free_models_options = [
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.1-pro-preview",
         "gemini-2.5-flash",
+        "gemini-2.0-flash",
         "gemini-2.5-pro",
-        "gemini-2.0-flash"
+        "gemini-1.5-flash",
+        "gemini-1.5-pro"
     ]
     
     selected_ai_model = st.selectbox("اختر نموذج الذكاء الاصطناعي:", free_models_options, index=0)
@@ -264,7 +264,9 @@ with st.sidebar:
         else:
             with st.spinner("جاري فحص الاتصال..."):
                 try:
-                    genai.configure(api_key=user_gemini_key.strip())
+                    c_key = user_gemini_key.strip()
+                    genai.configure(api_key=c_key)
+                    os.environ["GEMINI_API_KEY"] = c_key
                     test_model = genai.GenerativeModel(final_model_to_use)
                     test_res = test_model.generate_content("مرحبا")
                     if test_res.text:
@@ -498,7 +500,9 @@ else:
                                 with st.chat_message("assistant"):
                                     with st.spinner("جاري معالجة السؤال..."):
                                         try:
-                                            genai.configure(api_key=user_gemini_key.strip())
+                                            c_key = user_gemini_key.strip()
+                                            genai.configure(api_key=c_key)
+                                            os.environ["GEMINI_API_KEY"] = c_key
                                             chat_model = genai.GenerativeModel(final_model_to_use)
                                             ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع.\nاجب بلغة عربية دقيقة بناءً على البيانات التالية:\n{context_text}\nسؤال المستخدم: {prompt_text}"
                                             response = chat_model.generate_content(ai_prompt)
