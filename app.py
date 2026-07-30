@@ -149,7 +149,7 @@ def fetch_structured_sessions(service, target_folder_id):
                     
     return sessions_list
 
-# --- دالة التحليل الذكي مع التثبيت المزدوج لمفتاح API ومتغير البيئة ---
+# --- دالة التحليل الذكي مع التثبيت المزدوج وتمرير المفتاح صراحةً للملفات ---
 def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
     if not api_key:
         return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API", "⚠️", "✅", "✅", "✅", "✅", "✅"]
@@ -185,8 +185,14 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
                     tmp.write(f_bytes)
                     tmp_path = tmp.name
                 
-                # رفع الملف بعد تجهيز البيئة بالكامل
-                g_file = genai.upload_file(tmp_path, mime_type=mime_type, display_name=f["name"])
+                # استخدام العميل المحدث لمنع أخطاء الـ Discovery API
+                client = genai.Client(api_key=clean_key) if hasattr(genai, "Client") else None
+                
+                if client and hasattr(client, "files"):
+                    g_file = client.files.upload(file=tmp_path, config={"mime_type": mime_type, "display_name": f["name"]})
+                else:
+                    g_file = genai.upload_file(tmp_path, mime_type=mime_type, display_name=f["name"])
+                    
                 uploaded_gemini_files.append(g_file)
                 try:
                     os.remove(tmp_path)
@@ -216,7 +222,8 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
         
         for g_file in uploaded_gemini_files:
             try:
-                genai.delete_file(g_file.name)
+                if hasattr(g_file, "name"):
+                    genai.delete_file(g_file.name)
             except:
                 pass
 
@@ -229,7 +236,8 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
         st.error(f"خطأ أثناء معالجة وتحليل الملفات: {e}")
         for g_file in uploaded_gemini_files:
             try:
-                genai.delete_file(g_file.name)
+                if hasattr(g_file, "name"):
+                    genai.delete_file(g_file.name)
             except:
                 pass
         
