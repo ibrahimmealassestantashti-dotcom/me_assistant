@@ -149,7 +149,7 @@ def fetch_structured_sessions(service, target_folder_id):
                     
     return sessions_list
 
-# --- دالة التحليل الذكي مع التثبيت المزدوج وتمرير المفتاح صراحةً للملفات ---
+# --- دالة التحليل الذكي للمطابقة الفردية ---
 def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
     if not api_key:
         return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API", "⚠️", "✅", "✅", "✅", "✅", "✅"]
@@ -185,9 +185,7 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
                     tmp.write(f_bytes)
                     tmp_path = tmp.name
                 
-                # استخدام العميل المحدث لمنع أخطاء الـ Discovery API
                 client = genai.Client(api_key=clean_key) if hasattr(genai, "Client") else None
-                
                 if client and hasattr(client, "files"):
                     g_file = client.files.upload(file=tmp_path, config={"mime_type": mime_type, "display_name": f["name"]})
                 else:
@@ -242,6 +240,127 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
                 pass
         
     return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ تعذر التحليل", "⚠️ تعذر التحليل", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
+
+# --- دالة مخصصة لقراءة التقارير واستخراج الإحصائيات التجميعية لجميع الجلسات ---
+def extract_all_reports_stats(service, sessions_data, api_key, model_name):
+    if not api_key:
+        return []
+
+    clean_key = api_key.strip()
+    genai.configure(api_key=clean_key)
+    os.environ["GEMINI_API_KEY"] = clean_key
+
+    all_stats_results = []
+
+    for sess in sessions_data:
+        sess_name = sess.get("session_name", "جلسة")
+        rep_files = sess.get("report", {}).get("files", [])
+        
+        if not rep_files:
+            all_stats_results.append({
+                "session": sess_name,
+                "date": "--/--/--",
+                "total": 0,
+                "men": 0,
+                "women": 0,
+                "boys": 0,
+                "girls": 0,
+                "pwd": 0
+            })
+            continue
+
+        uploaded_gemini_files = []
+        try:
+            # نأخذ أول ملف تقرير في المجلد كمرجع أساسي للبيانات
+            f = rep_files[0]
+            f_bytes = download_file_bytes(service, f["id"])
+            if f_bytes:
+                fname_lower = f["name"].lower()
+                if fname_lower.endswith(".pdf"):
+                    mime_type = "application/pdf"
+                elif fname_lower.endswith(".docx") or fname_lower.endswith(".doc"):
+                    mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                elif fname_lower.endswith(".png"):
+                    mime_type = "image/png"
+                elif fname_lower.endswith(".jpg") or fname_lower.endswith(".jpeg"):
+                    mime_type = "image/jpeg"
+                else:
+                    mime_type = "application/octet-stream"
+
+                suffix = os.path.splitext(f["name"])[1]
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(f_bytes)
+                    tmp_path = tmp.name
+                
+                client = genai.Client(api_key=clean_key) if hasattr(genai, "Client") else None
+                if client and hasattr(client, "files"):
+                    g_file = client.files.upload(file=tmp_path, config={"mime_type": mime_type, "display_name": f["name"]})
+                else:
+                    g_file = genai.upload_file(tmp_path, mime_type=mime_type, display_name=f["name"])
+                
+                uploaded_gemini_files.append(g_file)
+                try:
+                    os.remove(tmp_path)
+                except:
+                    pass
+
+                prompt = f"""
+                أنت مدقق بيانات مشاريع. اقرأ ملف التقرير المرفق لهذه الجلسة ("{sess_name}") واستخرج البيانات التالية بدقة من النصف الأول من الصفحة الأولى:
+                أجب بصيغة JSON صارمة فقط وبالتنسيق التالي بدون أي نصوص إضافية:
+                {{
+                  "date": "التاريخ المستخرج (مثال: YYYY-MM-DD أو DD/MM/YYYY أو -- لو غير موجود)",
+                  "total": رقماً إجمالياً للمستفيدين (أو 0),
+                  "men": عدد الرجال رقماً (أو 0),
+                  "women": عدد النساء رقماً (أو 0),
+                  "boys": عدد الأولاد/أطفال ذكور رقماً (أو 0),
+                  "girls": عدد الفتيات/إناث أطفال رقماً (أو 0),
+                  "pwd": عدد ذوي الاحتياجات الخاصة رقماً (أو 0)
+                }}
+                """
+
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content([prompt] + uploaded_gemini_files)
+                text_res = response.text
+
+                for g_file in uploaded_gemini_files:
+                    try:
+                        if hasattr(g_file, "name"):
+                            genai.delete_file(g_file.name)
+                    except:
+                        pass
+
+                match = re.search(r'\{.*\}', text_res, re.DOTALL)
+                if match:
+                    data = json.loads(match.group(0))
+                    all_stats_results.append({
+                        "session": sess_name,
+                        "date": str(data.get("date", "--/--/--")),
+                        "total": int(data.get("total", 0) or 0),
+                        "men": int(data.get("men", 0) or 0),
+                        "women": int(data.get("women", 0) or 0),
+                        "boys": int(data.get("boys", 0) or 0),
+                        "girls": int(data.get("girls", 0) or 0),
+                        "pwd": int(data.get("pwd", 0) or 0)
+                    })
+                    continue
+        except Exception:
+            pass
+
+        # في حال حدوث أي خطأ بالاستخراج يتم وضع قيم صفرية
+        for g_file in uploaded_gemini_files:
+            try:
+                if hasattr(g_file, "name"):
+                    genai.delete_file(g_file.name)
+            except:
+                pass
+                
+        all_stats_results.append({
+            "session": sess_name,
+            "date": "--/--/--",
+            "total": 0, "men": 0, "women": 0, "boys": 0, "girls": 0, "pwd": 0
+        })
+
+    return all_stats_results
 
 # --- الواجهة الرئيسية ---
 st.title("📊 نظام إدارة ومتابعة المشاريع الذكي (ME Assistant)")
@@ -451,28 +570,54 @@ else:
                                 st.markdown("---")
 
                         elif current_view == "stats":
-                            st.markdown("#### 📊 الإحصائية التجميعية للمستفيدين عبر الجلسات المطابقة:")
-                            tot_men, tot_women, tot_boys, tot_girls, tot_pwd = 0, 0, 0, 0, 0
+                            st.markdown("#### 📊 الإحصائية التجميعية المستخرجة من التقارير لكل الجلسات:")
                             
-                            for s_idx, s in enumerate(sessions_data):
-                                res_key = f"match_res_{p_name}_{s_idx}"
-                                if res_key in st.session_state:
-                                    att_v, _, _ = st.session_state[res_key]
-                                    try:
-                                        tot_men += int(att_v[2]) if att_v[2].isdigit() else 0
-                                        tot_women += int(att_v[3]) if att_v[3].isdigit() else 0
-                                        tot_boys += int(att_v[4]) if att_v[4].isdigit() else 0
-                                        tot_girls += int(att_v[5]) if att_v[5].isdigit() else 0
-                                        tot_pwd += int(att_v[6]) if att_v[6].isdigit() else 0
-                                    except Exception:
-                                        pass
+                            stats_cache_key = f"reports_stats_table_{p_name}"
+                            
+                            if st.button("🔄 جلب وتحديث الإحصائيات من التقارير", key=f"fetch_stats_btn_{p_name}", type="primary"):
+                                with st.spinner("جاري قراءة تقارير كافة الجلسات واستخراج البيانات والتواريخ..."):
+                                    extracted_stats = extract_all_reports_stats(service, sessions_data, user_gemini_key, final_model_to_use)
+                                    st.session_state[stats_cache_key] = extracted_stats
+
+                            if stats_cache_key in st.session_state:
+                                stats_list = st.session_state[stats_cache_key]
                                 
-                            col_stat1, col_stat2, col_stat3, col_stat4, col_stat5 = st.columns(5)
-                            col_stat1.metric("👨 رجال", str(tot_men))
-                            col_stat2.metric("👩 نساء", str(tot_women))
-                            col_stat3.metric("👧 فتيات إناث", str(tot_girls))
-                            col_stat4.metric("👶 أطفال ذكور", str(tot_boys))
-                            col_stat5.metric("♿ ذوي الاحتياجات", str(tot_pwd))
+                                if stats_list:
+                                    table_rows = []
+                                    t_total, t_men, t_women, t_boys, t_girls, t_pwd = 0, 0, 0, 0, 0, 0
+                                    
+                                    for item in stats_list:
+                                        table_rows.append({
+                                            "اسم الجلسة": item["session"],
+                                            "التاريخ": item["date"],
+                                            "الإجمالي": item["total"],
+                                            "رجال": item["men"],
+                                            "نساء": item["women"],
+                                            "أولاد": item["boys"],
+                                            "فتيات": item["girls"],
+                                            "ذوي الاحتياجات": item["pwd"]
+                                        })
+                                        t_total += item["total"]
+                                        t_men += item["men"]
+                                        t_women += item["women"]
+                                        t_boys += item["boys"]
+                                        t_girls += item["girls"]
+                                        t_pwd += item["pwd"]
+                                        
+                                    st.table(table_rows)
+                                    
+                                    st.markdown("##### 📌 **المجموع الكلي للمشروع عبر كافة الجلسات:**")
+                                    col_stat1, col_stat2, col_stat3, col_stat4, col_stat5, col_stat6 = st.columns(6)
+                                    col_stat1.metric("👥 إجمالي المستفيدين", str(t_total))
+                                    col_stat2.metric("👨 رجال", str(t_men))
+                                    col_stat3.metric("👩 نساء", str(t_women))
+                                    col_stat4.metric("👶 أطفال ذكور", str(t_boys))
+                                    col_stat5.metric("👧 فتيات إناث", str(t_girls))
+                                    col_stat6.metric("♿ ذوي الاحتياجات", str(t_pwd))
+                                else:
+                                    st.warning("لا توجد بيانات إحصائية متاحة.")
+                            else:
+                                st.info("اضغط على زر (جلب وتحديث الإحصائيات من التقارير) أعلاه لبدء القراءة التلقائية لملفات التقارير وبناء الجدول.")
 
                         elif current_view == "chat":
                             st.markdown("---")
