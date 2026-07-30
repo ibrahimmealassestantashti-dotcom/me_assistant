@@ -149,102 +149,12 @@ def fetch_structured_sessions(service, target_folder_id):
                     
     return sessions_list
 
-# --- دالة التحليل الذكي للمطابقة الفردية ---
-def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
+# --- دالة مخصصة مع مسار تتبع مرئي (Logging) ---
+def extract_all_reports_stats_with_logs(service, sessions_data, api_key, model_name):
+    logs = []
     if not api_key:
-        return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API", "⚠️", "✅", "✅", "✅", "✅", "✅"]
-
-    clean_key = api_key.strip()
-    genai.configure(api_key=clean_key)
-    os.environ["GEMINI_API_KEY"] = clean_key
-
-    att_files = session_info.get("attendance", {}).get("files", [])
-    rep_files = session_info.get("report", {}).get("files", [])
-    
-    uploaded_gemini_files = []
-    
-    try:
-        all_target_files = att_files + rep_files
-        for f in all_target_files:
-            f_bytes = download_file_bytes(service, f["id"])
-            if f_bytes:
-                fname_lower = f["name"].lower()
-                if fname_lower.endswith(".pdf"):
-                    mime_type = "application/pdf"
-                elif fname_lower.endswith(".docx") or fname_lower.endswith(".doc"):
-                    mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                elif fname_lower.endswith(".png"):
-                    mime_type = "image/png"
-                elif fname_lower.endswith(".jpg") or fname_lower.endswith(".jpeg"):
-                    mime_type = "image/jpeg"
-                else:
-                    mime_type = "application/octet-stream"
-
-                suffix = os.path.splitext(f["name"])[1]
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(f_bytes)
-                    tmp_path = tmp.name
-                
-                client = genai.Client(api_key=clean_key) if hasattr(genai, "Client") else None
-                if client and hasattr(client, "files"):
-                    g_file = client.files.upload(file=tmp_path, config={"mime_type": mime_type, "display_name": f["name"]})
-                else:
-                    g_file = genai.upload_file(tmp_path, mime_type=mime_type, display_name=f["name"])
-                    
-                uploaded_gemini_files.append(g_file)
-                try:
-                    os.remove(tmp_path)
-                except:
-                    pass
-
-        prompt = f"""
-        أنت مدقق بيانات مشاريع محترف. قم بقراءة وفحص مستندات الحضور والتقارير المرفقة لهذه الجلسة ("{session_info.get('session_name')}") بدقة متناهية.
-        ملاحظات هامة جداً:
-        1. ورقة الحضور ملف PDF ممسوح ضوئياً والأعداد والتواريخ مكتوبة بخط اليد.
-        2. التقرير ملف وورد (Word) أو PDF والبيانات المطلوبة موجودة في النصف الأول من الصفحة الأولى.
-        3. عدم وجود رقم أو خانة فارغة يعني تماماً أن القيمة هي صفر (0).
-        
-        استخرج البيانات التالية بدقة على شكل JSON صارم:
-        - attendance_data: [التاريخ، العدد الإجمالي، الرجال (Men)، النساء (Women)، الأولاد/أطفال ذكور (Boys)، الفتيات (Girls)، ذوي الاحتياجات (PWD)]
-        - report_data: [التاريخ، العدد الإجمالي، الرجال (Men)، النساء (Women)، الأولاد/أطفال ذكور (Boys)، الفتيات (Girls)، ذوي الاحتياجات (PWD)]
-        - differences: [تقييم لكل بند: اكتب "مطابقة" إذا كانت متطابقة تماماً، أو اكتب وصف الفارق إذا وُجد اختلاف]
-
-        أجب بصيغة JSON صارمة فقط وبدون أي نصوص إضافية، بحيث تكون القوائم تحتوي على 7 عناصر تماماً، وجميع القيم الرقمية أو التواريخ مضبوطة وصحيحة. وإذا لم توجد قيمة ضع "0".
-        """
-
-        model = genai.GenerativeModel(model_name)
-        model_input = [prompt] + uploaded_gemini_files
-        
-        response = model.generate_content(model_input)
-        text_res = response.text
-        
-        for g_file in uploaded_gemini_files:
-            try:
-                if hasattr(g_file, "name"):
-                    genai.delete_file(g_file.name)
-            except:
-                pass
-
-        match = re.search(r'\{.*\}', text_res, re.DOTALL)
-        if match:
-            data = json.loads(match.group(0))
-            return data.get("attendance_data", ["--", "0", "0", "0", "0", "0", "0"]), data.get("report_data", ["--", "0", "0", "0", "0", "0", "0"]), data.get("differences", ["✅", "✅", "✅", "✅", "✅", "✅", "✅"])
-            
-    except Exception as e:
-        st.error(f"خطأ أثناء معالجة وتحليل الملفات: {e}")
-        for g_file in uploaded_gemini_files:
-            try:
-                if hasattr(g_file, "name"):
-                    genai.delete_file(g_file.name)
-            except:
-                pass
-        
-    return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ تعذر التحليل", "⚠️ تعذر التحليل", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
-
-# --- دالة مخصصة لقراءة التقارير واستخراج الإحصائيات التجميعية لجميع الجلسات ---
-def extract_all_reports_stats(service, sessions_data, api_key, model_name):
-    if not api_key:
-        return []
+        logs.append("❌ خطأ: مفتاح API غير موجود.")
+        return [], logs
 
     clean_key = api_key.strip()
     genai.configure(api_key=clean_key)
@@ -256,97 +166,103 @@ def extract_all_reports_stats(service, sessions_data, api_key, model_name):
         sess_name = sess.get("session_name", "جلسة")
         rep_files = sess.get("report", {}).get("files", [])
         
+        logs.append(f"📁 فحص الجلسة: **{sess_name}** | عدد ملفات التقارير المكتشفة: {len(rep_files)}")
+        
         if not rep_files:
+            logs.append(f"⚠️ تحذير: لم يتم العثور على أي ملف داخل مجلد التقرير للجلسة ({sess_name}).")
             all_stats_results.append({
-                "session": sess_name,
-                "date": "--/--/--",
-                "total": 0,
-                "men": 0,
-                "women": 0,
-                "boys": 0,
-                "girls": 0,
-                "pwd": 0
+                "session": sess_name, "date": "--/--/--", "total": 0, "men": 0, "women": 0, "boys": 0, "girls": 0, "pwd": 0
             })
             continue
 
         uploaded_gemini_files = []
         try:
-            # نأخذ أول ملف تقرير في المجلد كمرجع أساسي للبيانات
             f = rep_files[0]
+            logs.append(f"📥 جاري تحميل الملف: `{f['name']}` (ID: {f['id']})...")
             f_bytes = download_file_bytes(service, f["id"])
-            if f_bytes:
-                fname_lower = f["name"].lower()
-                if fname_lower.endswith(".pdf"):
-                    mime_type = "application/pdf"
-                elif fname_lower.endswith(".docx") or fname_lower.endswith(".doc"):
-                    mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                elif fname_lower.endswith(".png"):
-                    mime_type = "image/png"
-                elif fname_lower.endswith(".jpg") or fname_lower.endswith(".jpeg"):
-                    mime_type = "image/jpeg"
-                else:
-                    mime_type = "application/octet-stream"
+            
+            if not f_bytes:
+                logs.append(f"❌ فشل تحميل بايتات الملف `{f['name']}` من Google Drive.")
+                raise Exception("Empty bytes")
 
-                suffix = os.path.splitext(f["name"])[1]
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(f_bytes)
-                    tmp_path = tmp.name
-                
-                client = genai.Client(api_key=clean_key) if hasattr(genai, "Client") else None
-                if client and hasattr(client, "files"):
-                    g_file = client.files.upload(file=tmp_path, config={"mime_type": mime_type, "display_name": f["name"]})
-                else:
-                    g_file = genai.upload_file(tmp_path, mime_type=mime_type, display_name=f["name"])
-                
-                uploaded_gemini_files.append(g_file)
+            fname_lower = f["name"].lower()
+            if fname_lower.endswith(".pdf"):
+                mime_type = "application/pdf"
+            elif fname_lower.endswith(".docx") or fname_lower.endswith(".doc"):
+                mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            elif fname_lower.endswith(".png"):
+                mime_type = "image/png"
+            elif fname_lower.endswith(".jpg") or fname_lower.endswith(".jpeg"):
+                mime_type = "image/jpeg"
+            else:
+                mime_type = "application/octet-stream"
+
+            suffix = os.path.splitext(f["name"])[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(f_bytes)
+                tmp_path = tmp.name
+            
+            logs.append(f"☁️ جاري رفع الملف إلى نموذج Gemini ({model_name})...")
+            client = genai.Client(api_key=clean_key) if hasattr(genai, "Client") else None
+            if client and hasattr(client, "files"):
+                g_file = client.files.upload(file=tmp_path, config={"mime_type": mime_type, "display_name": f["name"]})
+            else:
+                g_file = genai.upload_file(tmp_path, mime_type=mime_type, display_name=f["name"])
+            
+            uploaded_gemini_files.append(g_file)
+            try:
+                os.remove(tmp_path)
+            except:
+                pass
+
+            prompt = f"""
+            أنت مدقق بيانات مشاريع. اقرأ ملف التقرير المرفق لهذه الجلسة ("{sess_name}") واستخرج البيانات التالية بدقة من النصف الأول من الصفحة الأولى:
+            أجب بصيغة JSON صارمة فقط وبالتنسيق التالي بدون أي نصوص إضافية:
+            {{
+              "date": "التاريخ المستخرج (مثال: YYYY-MM-DD أو DD/MM/YYYY أو -- لو غير موجود)",
+              "total": رقماً إجمالياً للمستفيدين (أو 0),
+              "men": عدد الرجال رقماً (أو 0),
+              "women": عدد النساء رقماً (أو 0),
+              "boys": عدد الأولاد/أطفال ذكور رقماً (أو 0),
+              "girls": عدد الفتيات/إناث أطفال رقماً (أو 0),
+              "pwd": عدد ذوي الاحتياجات الخاصة رقماً (أو 0)
+            }}
+            """
+
+            logs.append(f"🤖 جاري إرسال الطلب للنموذج واستخراج البيانات...")
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content([prompt] + uploaded_gemini_files)
+            text_res = response.text
+            logs.append(f"📝 الرد الخام من النموذج: `{text_res}`")
+
+            for g_file in uploaded_gemini_files:
                 try:
-                    os.remove(tmp_path)
+                    if hasattr(g_file, "name"):
+                        genai.delete_file(g_file.name)
                 except:
                     pass
 
-                prompt = f"""
-                أنت مدقق بيانات مشاريع. اقرأ ملف التقرير المرفق لهذه الجلسة ("{sess_name}") واستخرج البيانات التالية بدقة من النصف الأول من الصفحة الأولى:
-                أجب بصيغة JSON صارمة فقط وبالتنسيق التالي بدون أي نصوص إضافية:
-                {{
-                  "date": "التاريخ المستخرج (مثال: YYYY-MM-DD أو DD/MM/YYYY أو -- لو غير موجود)",
-                  "total": رقماً إجمالياً للمستفيدين (أو 0),
-                  "men": عدد الرجال رقماً (أو 0),
-                  "women": عدد النساء رقماً (أو 0),
-                  "boys": عدد الأولاد/أطفال ذكور رقماً (أو 0),
-                  "girls": عدد الفتيات/إناث أطفال رقماً (أو 0),
-                  "pwd": عدد ذوي الاحتياجات الخاصة رقماً (أو 0)
-                }}
-                """
+            match = re.search(r'\{.*\}', text_res, re.DOTALL)
+            if match:
+                data = json.loads(match.group(0))
+                all_stats_results.append({
+                    "session": sess_name,
+                    "date": str(data.get("date", "--/--/--")),
+                    "total": int(data.get("total", 0) or 0),
+                    "men": int(data.get("men", 0) or 0),
+                    "women": int(data.get("women", 0) or 0),
+                    "boys": int(data.get("boys", 0) or 0),
+                    "girls": int(data.get("girls", 0) or 0),
+                    "pwd": int(data.get("pwd", 0) or 0)
+                })
+                logs.append(f"✅ تمت معالجة الجلسة بنجاح.")
+                continue
+            else:
+                logs.append(f"⚠️ لم يتم العثور على صيغة JSON مطابقة في رد النموذج لجلسة ({sess_name}).")
 
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content([prompt] + uploaded_gemini_files)
-                text_res = response.text
+        except Exception as e:
+            logs.append(f"❌ خطأ أثناء معالجة الجلسة ({sess_name}): {e}")
 
-                for g_file in uploaded_gemini_files:
-                    try:
-                        if hasattr(g_file, "name"):
-                            genai.delete_file(g_file.name)
-                    except:
-                        pass
-
-                match = re.search(r'\{.*\}', text_res, re.DOTALL)
-                if match:
-                    data = json.loads(match.group(0))
-                    all_stats_results.append({
-                        "session": sess_name,
-                        "date": str(data.get("date", "--/--/--")),
-                        "total": int(data.get("total", 0) or 0),
-                        "men": int(data.get("men", 0) or 0),
-                        "women": int(data.get("women", 0) or 0),
-                        "boys": int(data.get("boys", 0) or 0),
-                        "girls": int(data.get("girls", 0) or 0),
-                        "pwd": int(data.get("pwd", 0) or 0)
-                    })
-                    continue
-        except Exception:
-            pass
-
-        # في حال حدوث أي خطأ بالاستخراج يتم وضع قيم صفرية
         for g_file in uploaded_gemini_files:
             try:
                 if hasattr(g_file, "name"):
@@ -355,12 +271,10 @@ def extract_all_reports_stats(service, sessions_data, api_key, model_name):
                 pass
                 
         all_stats_results.append({
-            "session": sess_name,
-            "date": "--/--/--",
-            "total": 0, "men": 0, "women": 0, "boys": 0, "girls": 0, "pwd": 0
+            "session": sess_name, "date": "--/--/--", "total": 0, "men": 0, "women": 0, "boys": 0, "girls": 0, "pwd": 0
         })
 
-    return all_stats_results
+    return all_stats_results, logs
 
 # --- الواجهة الرئيسية ---
 st.title("📊 نظام إدارة ومتابعة المشاريع الذكي (ME Assistant)")
@@ -369,7 +283,6 @@ st.markdown("---")
 if "projects" not in st.session_state:
     st.session_state.projects = load_saved_projects()
 
-# --- القائمة الجانبية (Sidebar) ---
 with st.sidebar:
     st.header("🔑 إعدادات الذكاء الاصطناعي")
     user_gemini_key = st.text_input("مفتاح Gemini API", type="password", value=st.secrets.get("GEMINI_API_KEY", ""))
@@ -573,11 +486,19 @@ else:
                             st.markdown("#### 📊 الإحصائية التجميعية المستخرجة من التقارير لكل الجلسات:")
                             
                             stats_cache_key = f"reports_stats_table_{p_name}"
+                            logs_cache_key = f"reports_stats_logs_{p_name}"
                             
                             if st.button("🔄 جلب وتحديث الإحصائيات من التقارير", key=f"fetch_stats_btn_{p_name}", type="primary"):
                                 with st.spinner("جاري قراءة تقارير كافة الجلسات واستخراج البيانات والتواريخ..."):
-                                    extracted_stats = extract_all_reports_stats(service, sessions_data, user_gemini_key, final_model_to_use)
+                                    extracted_stats, execution_logs = extract_all_reports_stats_with_logs(service, sessions_data, user_gemini_key, final_model_to_use)
                                     st.session_state[stats_cache_key] = extracted_stats
+                                    st.session_state[logs_cache_key] = execution_logs
+
+                            # عرض مسار العمليات (Logs) إن وجد
+                            if logs_cache_key in st.session_state:
+                                with st.expander("🔍 **سجل مسار العمليات والتتبع (Logs):**", expanded=True):
+                                    for log_line in st.session_state[logs_cache_key]:
+                                        st.markdown(f"- {log_line}")
 
                             if stats_cache_key in st.session_state:
                                 stats_list = st.session_state[stats_cache_key]
