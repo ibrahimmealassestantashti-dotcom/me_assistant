@@ -1,8 +1,5 @@
 streamlit
-google-generativeai>=0.7.2
-google-api-python-client
-google-auth
-google-auth-httplib2
-google-auth-oauthlib
 google-genai
+google-auth
+google-api-python-client
 python-docx
