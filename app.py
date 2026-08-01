@@ -3,11 +3,17 @@ import json
 import os
 import re
 import io
+import time
 import tempfile
 import google.generativeai as genai
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
+
+try:
+    from docx import Document as DocxDocument
+except ImportError:
+    DocxDocument = None
 
 # --- إعدادات الصفحة ---
 st.set_page_config(
@@ -38,7 +44,7 @@ def save_projects(projects_dict):
 def get_drive_service():
     try:
         if "gcp_service_account" in st.secrets:
-            user_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+            creds_data = dict(st.secrets["gcp_service_account"])
             if "private_key" in creds_data:
                 creds_data["private_key"] = creds_data["private_key"].replace("\\n", "\n")
 
@@ -149,10 +155,37 @@ def fetch_structured_sessions(service, target_folder_id):
                     
     return sessions_list
 
-# --- دالة التحليل الذكي عبر Gemini ---
+def wait_for_file_active(g_file, timeout=90):
+    """ينتظر حتى تنتهي خوادم Gemini من معالجة الملف المرفوع (PROCESSING -> ACTIVE)
+    قبل استخدامه في generate_content، لتفادي فشل المطابقة بسبب ملف لم يجهز بعد."""
+    start = time.time()
+    while g_file.state.name == "PROCESSING":
+        if time.time() - start > timeout:
+            raise TimeoutError(f"انتهت مهلة معالجة الملف '{g_file.display_name}' على خوادم Gemini.")
+        time.sleep(2)
+        g_file = genai.get_file(g_file.name)
+    if g_file.state.name == "FAILED":
+        raise ValueError(f"فشلت معالجة الملف '{g_file.display_name}' على خوادم Gemini.")
+    return g_file
+
+def extract_text_from_docx_bytes(f_bytes):
+    """يستخرج النص من ملف Word محلياً، لأن Gemini File API لا يدعم رفع .docx مباشرة."""
+    if DocxDocument is None:
+        return None
+    doc = DocxDocument(io.BytesIO(f_bytes))
+    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+    # قراءة الجداول أيضاً، لأن بيانات التقارير غالباً تكون داخل جدول
+    for table in doc.tables:
+        for row in table.rows:
+            row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+            if row_text:
+                paragraphs.append(row_text)
+    return "\n".join(paragraphs)
+
+# --- دالة التحليل الذكي مع التثبيت المزدوج لمفتاح API ومتغير البيئة ---
 def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
     if not api_key:
-        return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ تعذر العثور على المفتاح", "⚠️", "✅", "✅", "✅", "✅", "✅"]
+        return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API", "⚠️", "✅", "✅", "✅", "✅", "✅"]
 
     clean_key = api_key.strip()
     genai.configure(api_key=clean_key)
@@ -162,42 +195,67 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
     rep_files = session_info.get("report", {}).get("files", [])
     
     uploaded_gemini_files = []
+    extracted_text_blocks = []
     
     try:
         all_target_files = att_files + rep_files
         for f in all_target_files:
             f_bytes = download_file_bytes(service, f["id"])
-            if f_bytes:
-                fname_lower = f["name"].lower()
-                if fname_lower.endswith(".pdf"):
-                    mime_type = "application/pdf"
-                elif fname_lower.endswith(".docx") or fname_lower.endswith(".doc"):
-                    mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                elif fname_lower.endswith(".png"):
-                    mime_type = "image/png"
-                elif fname_lower.endswith(".jpg") or fname_lower.endswith(".jpeg"):
-                    mime_type = "image/jpeg"
-                else:
-                    mime_type = "application/octet-stream"
+            if not f_bytes:
+                continue
 
-                suffix = os.path.splitext(f["name"])[1]
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(f_bytes)
-                    tmp_path = tmp.name
-                
-                g_file = genai.upload_file(tmp_path, mime_type=mime_type, display_name=f["name"])
-                uploaded_gemini_files.append(g_file)
+            fname_lower = f["name"].lower()
+
+            # ملفات Word: Gemini File API لا يدعم رفع .docx/.doc مباشرة (يرجع خطأ Unsupported MIME type)
+            # لذلك نستخرج النص محلياً ونرسله كنص ضمن البرومبت بدل رفعه كملف
+            if fname_lower.endswith(".docx"):
                 try:
-                    os.remove(tmp_path)
-                except:
-                    pass
+                    doc_text = extract_text_from_docx_bytes(f_bytes)
+                    if doc_text is None:
+                        extracted_text_blocks.append(
+                            f"⚠️ لم تتمكن من قراءة ملف Word ({f['name']}) لأن مكتبة python-docx غير مثبتة في البيئة."
+                        )
+                    else:
+                        extracted_text_blocks.append(f"محتوى ملف Word ({f['name']}):\n{doc_text}")
+                except Exception as docx_err:
+                    extracted_text_blocks.append(f"⚠️ تعذرت قراءة ملف Word ({f['name']}): {docx_err}")
+                continue
+            elif fname_lower.endswith(".doc"):
+                extracted_text_blocks.append(
+                    f"⚠️ الملف ({f['name']}) بصيغة .doc القديمة غير مدعومة تلقائياً، يفضّل حفظه كـ .docx أو PDF."
+                )
+                continue
+            elif fname_lower.endswith(".pdf"):
+                mime_type = "application/pdf"
+            elif fname_lower.endswith(".png"):
+                mime_type = "image/png"
+            elif fname_lower.endswith(".jpg") or fname_lower.endswith(".jpeg"):
+                mime_type = "image/jpeg"
+            else:
+                # نوع غير مدعوم من Gemini File API لعرض المستندات - نتجاهله بدل ما يفشل التحليل كامل
+                extracted_text_blocks.append(f"⚠️ نوع الملف ({f['name']}) غير مدعوم للتحليل التلقائي، تم تجاهله.")
+                continue
+
+            suffix = os.path.splitext(f["name"])[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(f_bytes)
+                tmp_path = tmp.name
+            
+            # رفع الملف ثم الانتظار حتى تكتمل معالجته على خوادم Gemini (PROCESSING -> ACTIVE)
+            g_file = genai.upload_file(tmp_path, mime_type=mime_type, display_name=f["name"])
+            g_file = wait_for_file_active(g_file)
+            uploaded_gemini_files.append(g_file)
+            try:
+                os.remove(tmp_path)
+            except:
+                pass
 
         prompt = f"""
         أنت مدقق بيانات مشاريع محترف. قم بقراءة وفحص مستندات الحضور والتقارير المرفقة لهذه الجلسة ("{session_info.get('session_name')}") بدقة متناهية.
-        ملاحظات هامة جداً للاستخراج:
-        1. ورقة الحضور هي ملف PDF ممسوح ضوئياً، والأعداد والتواريخ مكتوبة بخط اليد بداخلها.
-        2. التقرير هو ملف وورد (Word) أو PDF والبيانات المطلوبة موجودة في النصف الأول من الصفحة الأولى.
-        3. عدم وجود رقم أو وجود خانة فارغة يعني تماماً أن القيمة هي صفر (0).
+        ملاحظات هامة جداً:
+        1. ورقة الحضور ملف PDF ممسوح ضوئياً والأعداد والتواريخ مكتوبة بخط اليد.
+        2. التقرير ملف وورد (Word) أو PDF والبيانات المطلوبة موجودة في النصف الأول من الصفحة الأولى.
+        3. عدم وجود رقم أو خانة فارغة يعني تماماً أن القيمة هي صفر (0).
         
         استخرج البيانات التالية بدقة على شكل JSON صارم:
         - attendance_data: [التاريخ، العدد الإجمالي، الرجال (Men)، النساء (Women)، الأولاد/أطفال ذكور (Boys)، الفتيات (Girls)، ذوي الاحتياجات (PWD)]
@@ -206,6 +264,10 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
 
         أجب بصيغة JSON صارمة فقط وبدون أي نصوص إضافية، بحيث تكون القوائم تحتوي على 7 عناصر تماماً، وجميع القيم الرقمية أو التواريخ مضبوطة وصحيحة. وإذا لم توجد قيمة ضع "0".
         """
+
+        if extracted_text_blocks:
+            prompt += "\n\n--- نصوص مستخرجة مسبقاً من ملفات Word المرفقة (اعتمد عليها بدل الصورة) ---\n"
+            prompt += "\n\n".join(extracted_text_blocks)
 
         model = genai.GenerativeModel(model_name)
         model_input = [prompt] + uploaded_gemini_files
@@ -244,9 +306,7 @@ if "projects" not in st.session_state:
 # --- القائمة الجانبية (Sidebar) ---
 with st.sidebar:
     st.header("🔑 إعدادات الذكاء الاصطناعي")
-    
-    # تم إزالة حقل الإدخال اليدوي؛ النظام الآن يقرأ المفتاح من st.secrets مباشرة بشكل آمن ومؤتمت.
-    user_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+    user_gemini_key = st.text_input("مفتاح Gemini API", type="password", value=st.secrets.get("GEMINI_API_KEY", ""))
     
     free_models_options = [
         "gemini-2.5-flash",
@@ -259,9 +319,9 @@ with st.sidebar:
     selected_ai_model = st.selectbox("اختر نموذج الذكاء الاصطناعي:", free_models_options, index=0)
     final_model_to_use = selected_ai_model
 
-    if st.button("🧪 فحص الاتصال بالنماذج"):
+    if st.button("🧪 فحص الأداة والمفتاح"):
         if not user_gemini_key:
-            st.warning("⚠️ لم يتم العثور على مفتاح API في ملف Secrets. يرجى التأكد من إضافته هناك.")
+            st.warning("⚠️ يرجى إدخال مفتاح API أولاً.")
         else:
             with st.spinner("جاري فحص الاتصال..."):
                 try:
@@ -271,7 +331,7 @@ with st.sidebar:
                     test_model = genai.GenerativeModel(final_model_to_use)
                     test_res = test_model.generate_content("مرحبا")
                     if test_res.text:
-                        st.success(f"✅ الاتصال ناجح والنموذج ({final_model_to_use}) يعمل بكفاءة مع بيانات الـ Secrets.")
+                        st.success(f"✅ الاتصال ناجح والنموذج ({final_model_to_use}) يعمل بكفاءة.")
                 except Exception as e:
                     st.error(f"❌ فشل الفحص: {e}")
 
