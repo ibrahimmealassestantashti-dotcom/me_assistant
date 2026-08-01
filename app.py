@@ -78,9 +78,18 @@ def get_folder_contents(service, folder_id):
         st.error(f"خطأ أثناء قراءة المجلد: {e}")
     return folders, files
 
-def download_file_bytes(service, file_id):
+def download_file_bytes(service, file_item):
+    """يحمّل بايتات الملف. يدعم الملفات الثنائية العادية (PDF/صور/Word المرفوعة)
+    وأيضاً مستندات Google الأصلية (Google Docs / Google Sheets) عبر التصدير،
+    لأن هذه الأخيرة لا يمكن تحميلها مباشرة بواسطة get_media."""
+    file_id = file_item.get("id")
+    mime_type = file_item.get("mimeType", "")
     try:
-        request = service.files().get_media(fileId=file_id)
+        if mime_type.startswith("application/vnd.google-apps"):
+            # مستند Google أصلي (تم إنشاؤه داخل درايف مباشرة) - يحتاج تصدير لصيغة PDF
+            request = service.files().export_media(fileId=file_id, mimeType="application/pdf")
+        else:
+            request = service.files().get_media(fileId=file_id)
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
         done = False
@@ -88,7 +97,7 @@ def download_file_bytes(service, file_id):
             _, done = downloader.next_chunk()
         fh.seek(0)
         return fh.read()
-    except Exception as e:
+    except Exception:
         return None
 
 def is_sub_component(folder_name):
@@ -185,7 +194,7 @@ def extract_text_from_docx_bytes(f_bytes):
 # --- دالة التحليل الذكي مع التثبيت المزدوج لمفتاح API ومتغير البيئة ---
 def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
     if not api_key:
-        return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API", "⚠️", "✅", "✅", "✅", "✅", "✅"]
+        return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API", "⚠️", "✅", "✅", "✅", "✅", "✅"], ["⚠️ لم يتم إدخال مفتاح API."]
 
     clean_key = api_key.strip()
     genai.configure(api_key=clean_key)
@@ -196,19 +205,31 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
     
     uploaded_gemini_files = []
     extracted_text_blocks = []
-    
+    debug_log = []
+
+    if not att_files and not rep_files:
+        debug_log.append("⚠️ لا توجد أي ملفات مكتشفة أصلاً داخل مجلدي الحضور/التقرير لهذه الجلسة.")
+
     try:
         all_target_files = att_files + rep_files
         for f in all_target_files:
-            f_bytes = download_file_bytes(service, f["id"])
+            f_mime = f.get("mimeType", "غير معروف")
+            f_bytes = download_file_bytes(service, f)
             if not f_bytes:
+                debug_log.append(f"❌ فشل تحميل الملف '{f['name']}' (النوع: {f_mime}) من Drive.")
                 continue
+            else:
+                debug_log.append(f"✅ تم تحميل الملف '{f['name']}' بنجاح ({len(f_bytes)} bytes، النوع: {f_mime}).")
 
             fname_lower = f["name"].lower()
+            is_google_native = f_mime.startswith("application/vnd.google-apps")
 
+            # مستندات Google الأصلية (Docs/Sheets) تم تصديرها أعلاه كـ PDF فعلياً بغض النظر عن اسمها
+            if is_google_native:
+                mime_type = "application/pdf"
             # ملفات Word: Gemini File API لا يدعم رفع .docx/.doc مباشرة (يرجع خطأ Unsupported MIME type)
             # لذلك نستخرج النص محلياً ونرسله كنص ضمن البرومبت بدل رفعه كملف
-            if fname_lower.endswith(".docx"):
+            elif fname_lower.endswith(".docx"):
                 try:
                     doc_text = extract_text_from_docx_bytes(f_bytes)
                     if doc_text is None:
@@ -234,9 +255,10 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
             else:
                 # نوع غير مدعوم من Gemini File API لعرض المستندات - نتجاهله بدل ما يفشل التحليل كامل
                 extracted_text_blocks.append(f"⚠️ نوع الملف ({f['name']}) غير مدعوم للتحليل التلقائي، تم تجاهله.")
+                debug_log.append(f"⏭️ تم تجاهل '{f['name']}' لأن نوعه ({f_mime}) غير مدعوم.")
                 continue
 
-            suffix = os.path.splitext(f["name"])[1]
+            suffix = ".pdf" if is_google_native else os.path.splitext(f["name"])[1]
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(f_bytes)
                 tmp_path = tmp.name
@@ -245,6 +267,7 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
             g_file = genai.upload_file(tmp_path, mime_type=mime_type, display_name=f["name"])
             g_file = wait_for_file_active(g_file)
             uploaded_gemini_files.append(g_file)
+            debug_log.append(f"📤 تم رفع '{f['name']}' إلى Gemini وأصبح جاهزاً للتحليل (state: {g_file.state.name}).")
             try:
                 os.remove(tmp_path)
             except:
@@ -269,6 +292,8 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
             prompt += "\n\n--- نصوص مستخرجة مسبقاً من ملفات Word المرفقة (اعتمد عليها بدل الصورة) ---\n"
             prompt += "\n\n".join(extracted_text_blocks)
 
+        debug_log.append(f"📊 الملخص: {len(uploaded_gemini_files)} ملف تم رفعه للذكاء الاصطناعي، {len(extracted_text_blocks)} كتلة نص مستخرجة من Word/تحذيرات.")
+
         model = genai.GenerativeModel(model_name)
         model_input = [prompt] + uploaded_gemini_files
         
@@ -284,17 +309,26 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
         match = re.search(r'\{.*\}', text_res, re.DOTALL)
         if match:
             data = json.loads(match.group(0))
-            return data.get("attendance_data", ["--", "0", "0", "0", "0", "0", "0"]), data.get("report_data", ["--", "0", "0", "0", "0", "0", "0"]), data.get("differences", ["✅", "✅", "✅", "✅", "✅", "✅", "✅"])
-            
+            return (
+                data.get("attendance_data", ["--", "0", "0", "0", "0", "0", "0"]),
+                data.get("report_data", ["--", "0", "0", "0", "0", "0", "0"]),
+                data.get("differences", ["✅", "✅", "✅", "✅", "✅", "✅", "✅"]),
+                debug_log,
+            )
+        else:
+            debug_log.append("⚠️ رد الذكاء الاصطناعي لم يحتوِ على JSON صالح.")
+            debug_log.append(f"نص الرد الخام (أول 500 حرف): {text_res[:500]}")
+
     except Exception as e:
         st.error(f"خطأ أثناء معالجة وتحليل الملفات: {e}")
+        debug_log.append(f"❌ استثناء: {e}")
         for g_file in uploaded_gemini_files:
             try:
                 genai.delete_file(g_file.name)
             except:
                 pass
         
-    return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ تعذر التحليل", "⚠️ تعذر التحليل", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"]
+    return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ تعذر التحليل", "⚠️ تعذر التحليل", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق", "✅ مطابق"], debug_log
 
 # --- الواجهة الرئيسية ---
 st.title("📊 نظام إدارة ومتابعة المشاريع الذكي (ME Assistant)")
@@ -478,11 +512,18 @@ else:
                                 
                                 if col_m2.button("🔍 مطابقة الجلسة", key=match_btn_key):
                                     with st.spinner("جاري قراءة وتحليل المستندات الفعليّة بدقة..."):
-                                        att_v, rep_v, diff_v = extract_session_metrics_with_ai(service, sess, user_gemini_key, final_model_to_use)
-                                        st.session_state[result_key] = (att_v, rep_v, diff_v)
+                                        att_v, rep_v, diff_v, debug_v = extract_session_metrics_with_ai(service, sess, user_gemini_key, final_model_to_use)
+                                        st.session_state[result_key] = (att_v, rep_v, diff_v, debug_v)
 
                                 if result_key in st.session_state:
-                                    att_vals, rep_vals, diff_vals = st.session_state[result_key]
+                                    att_vals, rep_vals, diff_vals, debug_vals = st.session_state[result_key]
+
+                                    with st.expander("🔧 تفاصيل المعالجة (تشخيص)", expanded=False):
+                                        if debug_vals:
+                                            for line in debug_vals:
+                                                st.caption(line)
+                                        else:
+                                            st.caption("لا توجد بيانات تشخيص.")
                                     
                                     def safe_pad(lst, target_len=7):
                                         return lst + ["0"] * (target_len - len(lst)) if len(lst) < target_len else lst[:target_len]
@@ -509,7 +550,7 @@ else:
                             for s_idx, s in enumerate(sessions_data):
                                 res_key = f"match_res_{p_name}_{s_idx}"
                                 if res_key in st.session_state:
-                                    att_v, _, _ = st.session_state[res_key]
+                                    att_v, _, _, _ = st.session_state[res_key]
                                     try:
                                         tot_men += int(att_v[2]) if att_v[2].isdigit() else 0
                                         tot_women += int(att_v[3]) if att_v[3].isdigit() else 0
@@ -550,7 +591,7 @@ else:
                                     s_title = s.get('session_name', '')
                                     res_key = f"match_res_{p_name}_{s_idx}"
                                     if res_key in st.session_state:
-                                        att_v, rep_v, _ = st.session_state[res_key]
+                                        att_v, rep_v, _, _ = st.session_state[res_key]
                                         context_text += f"- {s_title}:\n"
                                         try:
                                             context_text += f"  * التواريخ: حضور ({att_v[0]})، تقرير ({rep_v[0]})\n"
