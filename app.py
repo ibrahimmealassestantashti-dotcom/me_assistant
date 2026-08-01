@@ -38,7 +38,7 @@ def save_projects(projects_dict):
 def get_drive_service():
     try:
         if "gcp_service_account" in st.secrets:
-            creds_data = dict(st.secrets["gcp_service_account"])
+            user_gemini_key = st.secrets.get("GEMINI_API_KEY", ""))
             if "private_key" in creds_data:
                 creds_data["private_key"] = creds_data["private_key"].replace("\\n", "\n")
 
