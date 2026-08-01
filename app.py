@@ -5,7 +5,8 @@ import re
 import io
 import time
 import tempfile
-import google.generativeai as genai
+from google import genai
+from google.genai import types as genai_types
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -172,7 +173,7 @@ def fetch_structured_sessions(service, target_folder_id):
                     
     return sessions_list
 
-def wait_for_file_active(g_file, timeout=90):
+def wait_for_file_active(client, g_file, timeout=90):
     """ينتظر حتى تنتهي خوادم Gemini من معالجة الملف المرفوع (PROCESSING -> ACTIVE)
     قبل استخدامه في generate_content، لتفادي فشل المطابقة بسبب ملف لم يجهز بعد."""
     start = time.time()
@@ -180,7 +181,7 @@ def wait_for_file_active(g_file, timeout=90):
         if time.time() - start > timeout:
             raise TimeoutError(f"انتهت مهلة معالجة الملف '{g_file.display_name}' على خوادم Gemini.")
         time.sleep(2)
-        g_file = genai.get_file(g_file.name)
+        g_file = client.files.get(name=g_file.name)
     if g_file.state.name == "FAILED":
         raise ValueError(f"فشلت معالجة الملف '{g_file.display_name}' على خوادم Gemini.")
     return g_file
@@ -205,8 +206,7 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
         return ["--/--/--", "0", "0", "0", "0", "0", "0"], ["--/--/--", "0", "0", "0", "0", "0", "0"], ["⚠️ أدخل مفتاح API", "⚠️", "✅", "✅", "✅", "✅", "✅"], ["⚠️ لم يتم إدخال مفتاح API."]
 
     clean_key = api_key.strip()
-    genai.configure(api_key=clean_key)
-    os.environ["GEMINI_API_KEY"] = clean_key
+    client = genai.Client(api_key=clean_key)
 
     att_files = session_info.get("attendance", {}).get("files", [])
     rep_files = session_info.get("report", {}).get("files", [])
@@ -284,8 +284,11 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
                 tmp_path = tmp.name
             
             # رفع الملف ثم الانتظار حتى تكتمل معالجته على خوادم Gemini (PROCESSING -> ACTIVE)
-            g_file = genai.upload_file(tmp_path, mime_type=mime_type, display_name=f["name"])
-            g_file = wait_for_file_active(g_file)
+            g_file = client.files.upload(
+                file=tmp_path,
+                config=genai_types.UploadFileConfig(mime_type=mime_type, display_name=f["name"]),
+            )
+            g_file = wait_for_file_active(client, g_file)
             uploaded_gemini_files.append(g_file)
             debug_log.append(f"📤 تم رفع '{f['name']}' إلى Gemini وأصبح جاهزاً للتحليل (state: {g_file.state.name}).")
             try:
@@ -314,15 +317,12 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
 
         debug_log.append(f"📊 الملخص: {len(uploaded_gemini_files)} ملف تم رفعه للذكاء الاصطناعي، {len(extracted_text_blocks)} كتلة نص مستخرجة من Word/تحذيرات.")
 
-        model = genai.GenerativeModel(model_name)
-        model_input = [prompt] + uploaded_gemini_files
-        
-        response = model.generate_content(model_input)
+        response = client.models.generate_content(model=model_name, contents=[prompt] + uploaded_gemini_files)
         text_res = response.text
         
         for g_file in uploaded_gemini_files:
             try:
-                genai.delete_file(g_file.name)
+                client.files.delete(name=g_file.name)
             except:
                 pass
 
@@ -344,7 +344,7 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
         debug_log.append(f"❌ استثناء: {e}")
         for g_file in uploaded_gemini_files:
             try:
-                genai.delete_file(g_file.name)
+                client.files.delete(name=g_file.name)
             except:
                 pass
         
@@ -380,10 +380,8 @@ with st.sidebar:
             with st.spinner("جاري فحص الاتصال..."):
                 try:
                     c_key = user_gemini_key.strip()
-                    genai.configure(api_key=c_key)
-                    os.environ["GEMINI_API_KEY"] = c_key
-                    test_model = genai.GenerativeModel(final_model_to_use)
-                    test_res = test_model.generate_content("مرحبا")
+                    test_client = genai.Client(api_key=c_key)
+                    test_res = test_client.models.generate_content(model=final_model_to_use, contents="مرحبا")
                     if test_res.text:
                         st.success(f"✅ الاتصال ناجح والنموذج ({final_model_to_use}) يعمل بكفاءة.")
                 except Exception as e:
@@ -623,11 +621,9 @@ else:
                                     with st.spinner("جاري معالجة السؤال..."):
                                         try:
                                             c_key = user_gemini_key.strip()
-                                            genai.configure(api_key=c_key)
-                                            os.environ["GEMINI_API_KEY"] = c_key
-                                            chat_model = genai.GenerativeModel(final_model_to_use)
+                                            chat_client = genai.Client(api_key=c_key)
                                             ai_prompt = f"أنت مساعد ذكي لإدارة المشاريع.\nاجب بلغة عربية دقيقة بناءً على البيانات التالية:\n{context_text}\nسؤال المستخدم: {prompt_text}"
-                                            response = chat_model.generate_content(ai_prompt)
+                                            response = chat_client.models.generate_content(model=final_model_to_use, contents=ai_prompt)
                                             ai_response = response.text
                                             st.write(ai_response)
                                             st.session_state[chat_history_key].append({"role": "assistant", "content": ai_response})
