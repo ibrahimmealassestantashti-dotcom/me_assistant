@@ -224,12 +224,26 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
             fname_lower = f["name"].lower()
             is_google_native = f_mime.startswith("application/vnd.google-apps")
 
+            # نحدد "النوع الفعلي" اعتماداً على mimeType الحقيقي القادم من Drive أولاً
+            # (بعض الملفات المرفوعة لا تحمل امتداداً في اسمها، مثل "Report" بدون .pdf)
+            # ونستخدم امتداد الاسم فقط كخيار احتياطي إن كان mimeType غامضاً
+            is_pdf = is_google_native or f_mime == "application/pdf" or fname_lower.endswith(".pdf")
+            is_png = f_mime == "image/png" or fname_lower.endswith(".png")
+            is_jpg = f_mime in ("image/jpeg", "image/jpg") or fname_lower.endswith((".jpg", ".jpeg"))
+            is_docx = (not is_pdf and not is_png and not is_jpg) and (
+                f_mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                or fname_lower.endswith(".docx")
+            )
+            is_old_doc = (not is_pdf and not is_png and not is_jpg and not is_docx) and (
+                f_mime == "application/msword" or fname_lower.endswith(".doc")
+            )
+
             # مستندات Google الأصلية (Docs/Sheets) تم تصديرها أعلاه كـ PDF فعلياً بغض النظر عن اسمها
-            if is_google_native:
+            if is_pdf:
                 mime_type = "application/pdf"
             # ملفات Word: Gemini File API لا يدعم رفع .docx/.doc مباشرة (يرجع خطأ Unsupported MIME type)
             # لذلك نستخرج النص محلياً ونرسله كنص ضمن البرومبت بدل رفعه كملف
-            elif fname_lower.endswith(".docx"):
+            elif is_docx:
                 try:
                     doc_text = extract_text_from_docx_bytes(f_bytes)
                     if doc_text is None:
@@ -241,16 +255,14 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
                 except Exception as docx_err:
                     extracted_text_blocks.append(f"⚠️ تعذرت قراءة ملف Word ({f['name']}): {docx_err}")
                 continue
-            elif fname_lower.endswith(".doc"):
+            elif is_old_doc:
                 extracted_text_blocks.append(
                     f"⚠️ الملف ({f['name']}) بصيغة .doc القديمة غير مدعومة تلقائياً، يفضّل حفظه كـ .docx أو PDF."
                 )
                 continue
-            elif fname_lower.endswith(".pdf"):
-                mime_type = "application/pdf"
-            elif fname_lower.endswith(".png"):
+            elif is_png:
                 mime_type = "image/png"
-            elif fname_lower.endswith(".jpg") or fname_lower.endswith(".jpeg"):
+            elif is_jpg:
                 mime_type = "image/jpeg"
             else:
                 # نوع غير مدعوم من Gemini File API لعرض المستندات - نتجاهله بدل ما يفشل التحليل كامل
@@ -258,7 +270,7 @@ def extract_session_metrics_with_ai(service, session_info, api_key, model_name):
                 debug_log.append(f"⏭️ تم تجاهل '{f['name']}' لأن نوعه ({f_mime}) غير مدعوم.")
                 continue
 
-            suffix = ".pdf" if is_google_native else os.path.splitext(f["name"])[1]
+            suffix = ".pdf" if (is_google_native or is_pdf) else os.path.splitext(f["name"])[1] or (".png" if is_png else ".jpg")
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(f_bytes)
                 tmp_path = tmp.name
