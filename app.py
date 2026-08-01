@@ -24,6 +24,14 @@ st.set_page_config(
 
 CONFIG_FILE = "saved_projects.json"
 
+def _unpack_match_result(stored):
+    """فك متوافق مع نتائج المطابقة المخزنة، سواء كانت بالتركيبة القديمة (3 عناصر)
+    أو الجديدة (4 عناصر تتضمن سجل التشخيص) - يمنع كسر التطبيق بعد أي تحديث للكود."""
+    if len(stored) == 4:
+        return stored
+    att_v, rep_v, diff_v = stored
+    return att_v, rep_v, diff_v, []
+
 def load_saved_projects():
     if os.path.exists(CONFIG_FILE):
         try:
@@ -528,7 +536,7 @@ else:
                                         st.session_state[result_key] = (att_v, rep_v, diff_v, debug_v)
 
                                 if result_key in st.session_state:
-                                    att_vals, rep_vals, diff_vals, debug_vals = st.session_state[result_key]
+                                    att_vals, rep_vals, diff_vals, debug_vals = _unpack_match_result(st.session_state[result_key])
 
                                     with st.expander("🔧 تفاصيل المعالجة (تشخيص)", expanded=False):
                                         if debug_vals:
@@ -562,7 +570,7 @@ else:
                             for s_idx, s in enumerate(sessions_data):
                                 res_key = f"match_res_{p_name}_{s_idx}"
                                 if res_key in st.session_state:
-                                    att_v, _, _, _ = st.session_state[res_key]
+                                    att_v, _, _, _ = _unpack_match_result(st.session_state[res_key])
                                     try:
                                         tot_men += int(att_v[2]) if att_v[2].isdigit() else 0
                                         tot_women += int(att_v[3]) if att_v[3].isdigit() else 0
@@ -603,7 +611,7 @@ else:
                                     s_title = s.get('session_name', '')
                                     res_key = f"match_res_{p_name}_{s_idx}"
                                     if res_key in st.session_state:
-                                        att_v, rep_v, _, _ = st.session_state[res_key]
+                                        att_v, rep_v, _, _ = _unpack_match_result(st.session_state[res_key])
                                         context_text += f"- {s_title}:\n"
                                         try:
                                             context_text += f"  * التواريخ: حضور ({att_v[0]})، تقرير ({rep_v[0]})\n"
